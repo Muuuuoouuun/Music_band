@@ -13,12 +13,13 @@ import zipfile
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import __version__
+from ..audio_io import COOKIE_BROWSERS, default_cookies, link_info
 from ..engines import has, status as engine_status, torch_device
 from ..instruments import INSTRUMENTS
 from ..pipeline import find_musescore
@@ -122,7 +123,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return (STATIC / "index.html").read_text(encoding="utf-8")
 
     @app.get("/api/info")
-    def info():
+    def info(request: Request):
         return {
             "version": __version__,
             "device": torch_device(),
@@ -134,6 +135,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "instruments": [{"name": k, "label": v.label, "label_ko": v.label_ko}
                             for k, v in INSTRUMENTS.items()],
             "extensions": sorted(ALLOWED_EXT),
+            "cookie_browsers": list(COOKIE_BROWSERS),
+            "default_cookies": any(default_cookies()),  # 환경 변수로 로그인 정보를 정해 둠
+            "local": _is_local(request),  # 이 컴퓨터에서 연 화면 (브라우저 로그인 정보를 쓸 수 있음)
         }
 
     @app.get("/api/jobs")
@@ -202,8 +206,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             name = f.name
         return FileResponse(f, media_type=media, filename=name)
 
+    @app.get("/api/link")
+    def check_link(text: str = ""):
+        """붙여 넣은 글 미리 확인 (받지 않음): 정리한 링크, 사이트 이름, 시작 위치, 받을 수 없는 이유."""
+        info = link_info(text[:4000])
+        return info.to_dict() if info else {"url": None, "problem": None}
+
+    def guard_cookies(request: Request, options: dict) -> None:
+        # 같은 와이파이의 다른 기기가 이 컴퓨터 브라우저의 로그인으로 받지 못하게
+        if options.get("cookies_from_browser") and not _is_local(request):
+            raise HTTPException(403, "브라우저 로그인 정보는 이 컴퓨터에서 연 화면에서만 쓸 수 있어요.")
+
     @app.post("/api/jobs/url")
-    def create_url_job(req: UrlJob):
+    def create_url_job(req: UrlJob, request: Request):
+        guard_cookies(request, req.options)
         try:
             job = manager.create_from_url(req.url, req.options)
         except ValueError as e:
@@ -211,10 +227,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return asdict(job)
 
     @app.post("/api/jobs/{job_id}/analyze")
-    def analyze_job(job_id: str, req: AnalyzeRequest):
+    def analyze_job(job_id: str, req: AnalyzeRequest, request: Request):
         job_or_404(job_id)
+        guard_cookies(request, req.options)
         try:
             return asdict(manager.start_analysis(job_id, req.options))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         except RuntimeError as e:
             raise HTTPException(409, str(e))
 
@@ -403,7 +422,19 @@ def _brief(job) -> dict:
         "key": job.result["key_short"] if job.result else None,
         "parent": job.parent, "songs": len(job.songs),
         "url": job.url, "kind": job.kind,
+        "platform": _platform(job.url),  # youtube | instagram | tiktok … (링크 작업만)
+        "capture": job.options.get("capture") or None,  # 들려주기(mic | tab)로 녹음한 작업
     }
+
+
+def _is_local(request: Request) -> bool:
+    host = request.client.host if request.client else ""
+    return host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.")
+
+
+def _platform(url: str | None) -> str | None:
+    info = link_info(url) if url else None
+    return info.platform if info else None
 
 
 def launch(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True,

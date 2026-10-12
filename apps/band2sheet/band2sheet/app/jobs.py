@@ -14,8 +14,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from ..audio_io import (AUDIO_CODECS, download_audio, download_video, extract_audio, is_url,
-                        require_ffmpeg)
+from ..audio_io import (AUDIO_CODECS, COOKIE_BROWSERS, download_audio, download_video, extract_audio,
+                        link_info, require_ffmpeg)
+from ..instruments import SOLO_KINDS
 from ..pipeline import AnalyzeOptions, RenderOptions, RenderResult, analyze, render
 from ..project import Project
 from ..view import measure_times
@@ -25,6 +26,20 @@ ALLOWED_EXT = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma",
                ".zip",  # zip = 멀티트랙(스템) 묶음
                ".mid", ".midi", ".kar", ".musicxml", ".mxl", ".xml"}  # 악보 파일 -> 변환
 SCORE_OR_STEMS_EXT = {".zip", ".mid", ".midi", ".kar", ".musicxml", ".mxl", ".xml"}  # 곡 나누기 대상 아님
+SOURCE_KINDS = ("auto", *SOLO_KINDS)  # 소리 구성: 알아서(분리) | 노래·허밍 | 피아노 | 기타
+CAPTURES = ("mic", "tab")  # 들려주기: 마이크 녹음 | 이 컴퓨터(탭) 소리
+FETCHING = "받는 중…"  # 링크 작업의 임시 제목 꼬리 (받으면 영상 제목으로 바뀜)
+
+
+def check_source_options(options: dict) -> None:
+    """새 작업 옵션 중 입력(소리 구성·녹음·로그인 정보) 관련 값을 확인한다."""
+    if (options.get("source_kind") or "auto") not in SOURCE_KINDS:
+        raise ValueError(f"소리 구성은 {' / '.join(SOURCE_KINDS)} 중 하나입니다.")
+    if options.get("capture") and options["capture"] not in CAPTURES:
+        raise ValueError(f"녹음 방식은 {' / '.join(CAPTURES)} 중 하나입니다.")
+    browser = (options.get("cookies_from_browser") or "").strip().lower()
+    if browser and browser not in COOKIE_BROWSERS:
+        raise ValueError(f"로그인 정보를 읽을 수 없는 브라우저입니다: {browser}")
 
 
 @dataclass
@@ -242,6 +257,7 @@ class JobManager(EditMixin, PlaybackMixin):
         ext = Path(filename).suffix.lower()
         if ext not in ALLOWED_EXT:
             raise ValueError(f"지원하지 않는 파일 형식입니다: {ext or '(확장자 없음)'}")
+        check_source_options(options)
         job_id = uuid.uuid4().hex[:12]
         d = self.job_dir(job_id)
         d.mkdir(parents=True)
@@ -364,16 +380,21 @@ class JobManager(EditMixin, PlaybackMixin):
         """유튜브 등 영상 링크로 작업 만들기: 음성만 받아 바로 악보 (기본).
 
         keep_video: 영상도 받기, fetch_only: 받기·추출까지만 하고 '준비됨' 에서 멈춤.
+        url 에는 앱의 '공유' 문구를 통째로 붙여 넣어도 된다 (링크만 꺼내고 추적용 꼬리는 뗀다).
         """
-        url = (url or "").strip()
-        if not is_url(url) or len(url) > 2000 or any(c.isspace() for c in url):
+        info = link_info(url or "")
+        if info is None or len(info.url) > 2000:
             raise ValueError("http:// 또는 https:// 로 시작하는 영상 링크를 넣어 주세요.")
+        if info.problem:
+            raise ValueError(info.problem)
+        url = info.url
         fmt = str(options.get("audio_format") or "mp3").lower()
         if fmt not in AUDIO_CODECS:
             raise ValueError(f"지원하지 않는 음성 형식입니다: {fmt}")
+        check_source_options(options)
         job_id = uuid.uuid4().hex[:12]
         self.job_dir(job_id).mkdir(parents=True)
-        title = (options.get("title") or "").strip()[:120] or "링크에서 받는 중…"
+        title = (options.get("title") or "").strip()[:120] or f"{info.label} {FETCHING}"
         job = Job(id=job_id, title=title, filename=url, created=time.time(), options=options, url=url)
         with self.lock:
             self.jobs[job_id] = job
@@ -394,6 +415,7 @@ class JobManager(EditMixin, PlaybackMixin):
             has_input = any(self.job_dir(job_id).glob("input.*"))
             if job.status not in ("ready", "error") or not (has_input or job.url):
                 raise RuntimeError("영상·음성을 받아 둔 작업(또는 실패한 작업)만 이어서 악보를 만들 수 있습니다.")
+            check_source_options(options)
             job.options = {**job.options, **options, "fetch_only": False}
             job.status, job.error, job.progress, job.stage = "queued", None, 0.0, "대기 중"
             self._submit_locked(job)
@@ -413,14 +435,19 @@ class JobManager(EditMixin, PlaybackMixin):
         progress(0.0, "링크 정보 확인 중")
         log(f"{'영상' if keep_video else '음성'} 받기: {job.url}")
         report = lambda f, m: progress(0.08 * f, m)  # noqa: E731
+        browser = (opts.get("cookies_from_browser") or "").strip().lower() or None
+        if browser:
+            log(f"로그인 정보: {browser} 브라우저")
         if keep_video:
             raw, meta = download_video(job.url, d / "download",
-                                       max_height=int(opts.get("max_height") or 720), progress=report)
+                                       max_height=int(opts.get("max_height") or 720), progress=report,
+                                       cookies_from_browser=browser)
         else:
             fmt = str(opts.get("audio_format") or "mp3").lower()
             cut = not opts.get("fetch_only")  # 받기만 할 때는 나중에 구간을 바꿀 수 있게 전체를 받음
             raw, meta = download_audio(
                 job.url, d / "download", progress=report, prefer_ext="m4a" if fmt == "m4a" else None,
+                cookies_from_browser=browser,
                 start=float(opts["start"]) if cut and opts.get("start") else None,
                 duration=float(opts["duration"]) if cut and opts.get("duration") else None)
             if meta.get("section"):  # 구간만 받았으므로 분석할 때 다시 자르지 않음
@@ -429,7 +456,8 @@ class JobManager(EditMixin, PlaybackMixin):
         src = d / f"input{raw.suffix.lower()}"
         shutil.move(str(raw), src)
         shutil.rmtree(d / "download", ignore_errors=True)
-        log(f"{'영상' if keep_video else '음성'} 저장: {meta['title']} ({src.stat().st_size / 1048576:.1f} MB)")
+        where = f"{meta['platform_label']} · " if meta.get("platform_label") else ""
+        log(f"{'영상' if keep_video else '음성'} 저장: {where}{meta['title']} ({src.stat().st_size / 1048576:.1f} MB)")
         if not (opts.get("title") or "").strip():
             job.title = meta["title"][:120]
         fmt = str(opts.get("audio_format") or "mp3").lower()
@@ -491,6 +519,8 @@ class JobManager(EditMixin, PlaybackMixin):
                 language=opts.get("language") or "ko",
                 start=float(opts["start"]) if opts.get("start") else None,
                 duration=float(opts["duration"]) if opts.get("duration") else None,
+                solo=SOLO_KINDS.get(opts.get("source_kind") or "auto"),
+                tidy=bool(opts.get("capture")),  # 들려주기로 녹음한 소리
             )
             source = str(src)
             if src.suffix.lower() == ".zip":
@@ -518,6 +548,8 @@ class JobManager(EditMixin, PlaybackMixin):
             final_status, job.progress, job.stage = "done", 1.0, "완료"
         except Exception as e:  # 화면에 오류 표시
             job.error = str(e)
+            if job.url and not job.source and job.title.endswith(FETCHING):
+                job.title = job.title[: -len(FETCHING)] + "(받지 못함)"
             job.log.append("오류: " + str(e))
             job.log.append(traceback.format_exc(limit=3))
         finally:

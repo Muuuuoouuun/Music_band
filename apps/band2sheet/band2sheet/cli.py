@@ -75,6 +75,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--start", type=float, help="이 시각(초)부터만 사용")
     r.add_argument("--duration", type=float, help="이 길이(초)만 사용")
     r.add_argument("--song", help="곡이 여러 개 든 실황 영상: 찾은 곡 중 이 번호만 (예: 2, 1,3, all) — band2sheet scan 으로 확인")
+    r.add_argument("--solo", choices=["voice", "piano", "guitar"],
+                   help="한 악기(목소리)만 든 소리: 분리 없이 채보 (voice 는 멜로디로 템포·키·코드까지 추정)")
+    r.add_argument("--tidy", action="store_true", help="직접 녹음한 소리: 앞뒤 빈 소리 자르기 + 작은 소리 키우기")
     _add_render_args(r)
 
     sc = sub.add_parser("scan", help="긴 예배·공연 영상에서 곡 구간 찾기 (말씀·기도·전환 제외)")
@@ -151,19 +154,49 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _clean_source(source: str) -> str:
+    """파일이 아니면 링크로 보고 정리한다 (앱 공유 문구에서 링크만, 추적용 꼬리 떼기)."""
+    from .audio_io import link_info
+
+    if not source or Path(source).expanduser().exists():
+        return source
+    info = link_info(source)
+    if info is None:
+        return source
+    if info.problem:
+        raise ValueError(info.problem)
+    if info.changed:
+        print(f"링크: {info.label} · {info.url}")
+    return info.url
+
+
+def _link_dir_name(url: str) -> str:
+    """링크 작업의 기본 결과 폴더 이름: <사이트>_<영상 ID> (예: youtube_dQw4w9WgXcQ, instagram_DeXtiD_S4FJ)."""
+    from .audio_io import link_info, safe_name
+
+    info = link_info(url)
+    tail = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    if info and info.platform == "youtube" and "v=" in url:
+        tail = url.split("v=", 1)[1].split("&", 1)[0]
+    site = info.platform if info and info.platform not in ("other", "file") else "link"
+    return f"{site}_{safe_name(tail, 20)}"
+
+
 def cmd_run(args) -> int:
     from .audio_io import is_url, safe_name
+    from .instruments import SOLO_KINDS
     from .pipeline import AnalyzeOptions, run
 
     if not args.source and not args.stems_dir:
         print("source(유튜브 URL/파일) 또는 --stems-dir 가 필요합니다.", file=sys.stderr)
         return 2
+    args.source = _clean_source(args.source)
     out = args.out
     if out is None:
         if args.stems_dir:
             name = Path(args.stems_dir).name
         elif is_url(args.source):
-            name = "youtube_" + safe_name(args.source.rsplit("=", 1)[-1].rsplit("/", 1)[-1], 20)
+            name = _link_dir_name(args.source)
         else:
             name = safe_name(Path(args.source).stem)
         out = Path("output") / name
@@ -174,6 +207,7 @@ def cmd_run(args) -> int:
         bpm=args.bpm, time_signature=args.time_sig, downbeat=args.downbeat, lyrics=args.lyrics,
         language=None if args.lang == "auto" else args.lang, whisper_model=args.whisper_model,
         vocal_engine=args.vocal_engine, start=args.start, duration=args.duration,
+        solo=SOLO_KINDS.get(args.solo or ""), tidy=args.tidy,
     )
     ro = _render_opts(args)
     if args.song:
@@ -201,11 +235,12 @@ def cmd_run(args) -> int:
 def cmd_fetch(args) -> int:
     from .audio_io import fetch, is_url, safe_name
 
+    args.source = _clean_source(args.source)
     out = args.out
     if out is None:
         base = Path("output")
         if is_url(args.source):
-            out = base / ("youtube_" + safe_name(args.source.rsplit("=", 1)[-1].rsplit("/", 1)[-1], 20))
+            out = base / _link_dir_name(args.source)
         else:
             out = base / safe_name(Path(args.source).stem)
 

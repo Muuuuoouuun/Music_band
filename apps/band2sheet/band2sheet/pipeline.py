@@ -49,6 +49,10 @@ class AnalyzeOptions:
     duration: float | None = None
     min_stem_db: float = -24.0  # 믹스 대비 이보다 작은 스템은 비어 있다고 보고 건너뜀
     cleanup: bool = True  # 블리딩·유령음 정리, 악기 활동 구간 분석
+    # 한 악기(또는 목소리)만 든 소리: 분리 없이 그 악기로 채보 (vocals | piano | guitar …).
+    # vocals(노래·허밍)면 템포·마디·키·코드를 멜로디에서 함께 추정한다 (반주가 없으니까).
+    solo: str | None = None
+    tidy: bool = False  # 직접 녹음한 소리: 앞뒤 빈 소리 자르기 + 작은 소리 키우기
 
 
 def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
@@ -87,22 +91,35 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
     else:
         step(0.02, "① 오디오 준비 중 (영상/음원 변환)")
         mix_path, title = audio_io.prepare_input(source, work, opts.start, opts.duration)
+        if opts.tidy:
+            t = audio_io.tidy_recording(mix_path)
+            if t["trim_start"] or t["trim_end"] or t["gain_db"]:
+                log(f"   - 녹음 다듬기: 앞 {t['trim_start']:.1f}초 · 뒤 {t['trim_end']:.1f}초 빈 소리 자름"
+                    + (f", 소리 {t['gain_db']:+.0f} dB" if t["gain_db"] else ""))
         # 2) 분리
-        step(0.08, "② 악기별 분리 중 — 곡 길이와 장비에 따라 수 분 걸립니다")
-        if opts.model:
+        if opts.solo:
+            spec = spec_for(opts.solo)
+            step(0.08, f"② 분리 건너뜀 — {spec.label_ko} 하나만 든 소리")
+            stems_out.mkdir(parents=True, exist_ok=True)
+            solo_path = stems_out / f"{opts.solo}.wav"
+            shutil.copyfile(mix_path, solo_path)
+            sep = Stems(stems={opts.solo: solo_path}, notes=[f"분리 없음 · {spec.label_ko}만"])
+        elif opts.model:
+            step(0.08, "② 악기별 분리 중 — 곡 길이와 장비에 따라 수 분 걸립니다")
             sep = Stems(stems=separate(mix_path, stems_out, opts.model, opts.device),
                         notes=[f"악기: Demucs {opts.model}"])
         else:
+            step(0.08, "② 악기별 분리 중 — 곡 길이와 장비에 따라 수 분 걸립니다")
             sep = separate_detailed(mix_path, stems_out, opts.quality if opts.quality in QUALITY
                                     else "standard", opts.split_vocals, opts.split_drums,
                                     opts.device, log)
     engines["separation"] = ", ".join(sep.notes)
     stem_paths = sep.stems
 
-    wanted = opts.stems or list(stem_paths)
+    wanted = list(stem_paths) if opts.solo and not opts.stems_dir else opts.stems or list(stem_paths)
     if "vocals" in wanted and "backing_vocals" in stem_paths and opts.stems:
         wanted = wanted + ["backing_vocals"]
-    mix_audio, _ = sf.read(str(mix_path), always_2d=True)
+    mix_audio, mix_sr = sf.read(str(mix_path), always_2d=True)
 
     # 분리 결과 분석: 악기별 활동 구간, 블리딩 정도
     analyzer = None
@@ -159,6 +176,11 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
 
     if missing and not tracks:
         raise missing[0]
+    if opts.solo and not any(t.notes for t in tracks.values()):
+        what = "노래" if opts.solo == "vocals" else spec_for(opts.solo).label_ko
+        raise RuntimeError(f"{what}에서 음을 찾지 못했어요. 소리가 너무 작거나 짧았을 수 있어요. "
+                           "가까이에서 다시 들려주거나, "
+                           "소리 구성(여러 악기 / 노래·허밍 / 피아노 / 기타)을 바꿔 보세요.")
 
     # 4) 가사
     if opts.lyrics and "vocals" in tracks:
@@ -175,6 +197,14 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
 
     # 5) 템포/키/마디
     step(0.9, "⑤ 템포·박자·키 분석 중")
+    melody = tracks["vocals"].notes if opts.solo == "vocals" and "vocals" in tracks else []
+    if len(melody) >= 4:
+        # 노래·허밍만 녹음: 반주가 없어 비트·코드 인식의 근거가 부족하다 -> 멜로디로 함께 추정
+        project = _melody_project(title, source, tracks, stem_paths, separation, engines, melody,
+                                  len(mix_audio) / mix_sr, opts, log)
+        project.save(out_dir / "project.json")
+        step(0.95, "분석 완료")
+        return project
     from .engines import available
 
     use_model = opts.beat_engine != "librosa" and not opts.bpm and available("beat_this")
@@ -224,6 +254,43 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
     project.save(out_dir / "project.json")
     step(0.95, "분석 완료")
     return project
+
+
+def _melody_project(title: str, source: str, tracks: dict[str, Track], stem_paths: dict[str, Path],
+                    separation: dict, engines: dict[str, str], melody: list[Note], duration: float,
+                    opts: AnalyzeOptions, log: Log) -> Project:
+    """노래·허밍만 든 녹음: 사람이 멜로디에 반주를 붙이듯 템포·마디 첫 박·키·코드를 함께 고른다.
+
+    (harmonize.py — 반주 없는 노래 18곡에서 템포·키 18/18, 마디별 코드 약 83%)
+    박자는 지정하지 않으면 4/4 로 본다 (멜로디만으로 3/4 를 가리기는 어렵다).
+    """
+    from .harmonize import estimate_tempo, harmonize, track_beats_from_notes
+
+    time_sig = opts.time_signature if opts.time_signature and opts.time_signature != "auto" else "4/4"
+    num, den = (int(x) for x in time_sig.split("/"))
+    bpb = num // 3 if den == 8 and num % 3 == 0 and num > 3 else num
+    bpm = opts.bpm or estimate_tempo(melody)
+    beats = track_beats_from_notes(melody, duration, bpm)
+    h = harmonize(melody, beats, bpb, downbeat=opts.downbeat)
+    engines.update(beats="melody", chords="melody")
+    project = Project(title=title, source=source, beat_times=beats, key=h.key, time_signature=time_sig,
+                      tracks=tracks, stems_dir=str(Path(next(iter(stem_paths.values()))).parent),
+                      stems={k: str(v) for k, v in stem_paths.items()}, separation=separation,
+                      engines=engines, downbeat=h.downbeat)
+    tm = TimeMap(beats)
+    to_beat = lambda t: round(float(tm.to_beats(t)) - h.downbeat, 3)  # noqa: E731  마디 첫 박 기준
+    project.chords = [[to_beat(t0), to_beat(t1), int(root), q, None] for t0, t1, root, q in h.chords
+                      if t1 > t0] or None
+    names = " ".join(dict.fromkeys(_chord_label(r, q, h.key) for _, _, r, q in h.chords))
+    log(f"   - 반주 없는 노래: 멜로디로 템포 약 {project.tempo_bpm:.0f} BPM, {time_sig}, 키 {h.key.name}"
+        + (f", 코드 {names}" if names else ""))
+    return project
+
+
+def _chord_label(root: int, quality: str, key: Key) -> str:
+    from .harmonize import chord_name
+
+    return chord_name(root, quality, key)
 
 
 def detect_modulations(project: Project) -> None:
