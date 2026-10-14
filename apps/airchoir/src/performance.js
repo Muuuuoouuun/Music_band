@@ -1,5 +1,8 @@
-import { chordLabel, chordNotes, cloneConfig, loadConfig, saveConfig, validateConfig } from '../core/chords.js';
+import { chordLabel, cloneConfig, loadConfig, saveConfig, validateConfig } from '../core/chords.js';
+import { Voicer } from '../core/voicing.js';
+import { loadStyles, saveStyles, validateStyles, nextStyle, styleInfo } from '../core/styles.js';
 import { WheelController } from './wheel-controller.js';
+import { wheelKey } from './wheel-keys.js';
 import { SENSITIVITY, DEFAULT_SENSITIVITY } from './gestures.js';
 import { WheelUI } from './wheel-ui.js';
 
@@ -7,7 +10,7 @@ const emptySelection = () => ({ chord: null, root: null, quality: null, choir: n
 const quietGesture = () => ({ present: false, fist: true, pinch: false, preset: 0, level: 0, brightness: .5 });
 
 // Product, hand count and input ownership are separate from the media session.
-// Only wheel lists are persisted; live notes, streams and device choices are not.
+// Only wheel lists and harmony characters are persisted; live notes, streams and device choices are not.
 export class Performance {
   constructor({ getAudio, isReady, hasCamera, onTransition, onStop, onInterrupt, notify,
     sensitivity = DEFAULT_SENSITIVITY, onSensitivity = null }) {
@@ -19,6 +22,9 @@ export class Performance {
     try { storage = window.localStorage; } catch { storage = null; }
     this.storage = storage;
     const loaded = loadConfig(storage);
+    this.styles = loadStyles(storage).styles;
+    this.voicer = new Voicer({ style: this.styles.voicing, smooth: this.styles.smooth });
+    getAudio().setParams?.({ style: this.styles.choir });
     this.state = { product: 'choir', hands: 'one', input: 'hands', config: loaded.config,
       current: emptySelection(), armed: false, status: '콰이어 · 손가락으로 화음을 지휘하세요.' };
     this.sensitivity = Object.hasOwn(SENSITIVITY, sensitivity) ? sensitivity : DEFAULT_SENSITIVITY;
@@ -27,6 +33,10 @@ export class Performance {
     this.blocked = false;
     this.lastCameraFrame = -Infinity;
     this.ui = new WheelUI({ config: this.state.config,
+      styles: this.styles,
+      onStyle: (kind, value) => this.setStyle(kind, value),
+      onCycleStyle: (step) => this.cycleStyle(step),
+      onKey: (code) => this.keySelect(code),
       sensitivity: this.sensitivity,
       sensitivities: Object.entries(SENSITIVITY).map(([id, v]) => ({ id, label: v.label, description: v.description })),
       onSensitivity: value => (this.onSensitivity ? this.onSensitivity(value) : this.setSensitivity(value)),
@@ -56,8 +66,74 @@ export class Performance {
   get legacy() { return this.state.product === 'choir' && this.state.input === 'hands'; }
   get settingsOpen() { return !!this.ui.settingsOpen; }
 
+  // 화음 성격: 합창은 쌓는 음(core/dsp.js), 코드 악기는 보이싱(core/voicing.js). 연주 중에도 바로 바뀐다.
+  setStyle(kind, value) {
+    if (!['choir', 'voicing', 'smooth', 'swipe'].includes(kind)) return false;
+    const next = validateStyles({ ...this.styles, [kind]: value });
+    if (next[kind] !== value || this.styles[kind] === value) return false;
+    this.styles = next;
+    const voicer = this.chordVoicer();
+    if (kind === 'choir') this.getAudio().setParams?.({ style: next.choir });
+    else if (kind !== 'swipe') {
+      voicer.setStyle(next.voicing);
+      voicer.setSmooth(next.smooth);
+      if (this.state.armed && this.state.current.chord) this.playCurrentChord();
+    }
+    if (kind === 'choir' || kind === 'voicing') {
+      const info = styleInfo(kind, next[kind]);
+      if (!(this.state.armed && this.state.product === 'chord')) this.state.status = `화음 성격 · ${info.label}`;
+      this.ui.flashStyle?.(info); // 무대 위에 잠깐: 집중 화면·키보드로 바꿀 때도 무엇이 됐는지 보이게
+    }
+    const saved = this.storage ? saveStyles(this.storage, next) : { ok: false };
+    if (!saved.ok && saved.error && !this.styleSaveWarned) { this.styleSaveWarned = true; this.notify(saved.error); }
+    this.render();
+    return true;
+  }
+
+  /** 지금 악기의 화음 성격을 다음 것으로 (H 키, Shift+H 는 step = -1 로 이전). */
+  cycleStyle(step = 1) {
+    const kind = this.state.product === 'choir' ? 'choir' : 'voicing';
+    return this.setStyle(kind, nextStyle(kind, this.styles[kind], step));
+  }
+
+  /**
+   * 카메라 앞에서 편 손을 옆으로 휙: +1 다음 / -1 이전 화음 성격 (src/motion.js SwipeDetector).
+   * 손동작 조작일 때만, 꺼 두었거나 설정·정지 중이면 넘기지 않는다.
+   */
+  swipeStyle(dir) {
+    if (!dir || this.styles?.swipe === false || this.state.input !== 'hands') return false;
+    if (this.settingsOpen || document.hidden || !this.isReady()) return false; // 소리를 내지 않으므로 정지 뒤에도 바꿀 수 있다
+    return this.cycleStyle(dir);
+  }
+
+  /**
+   * 클릭·키보드 조작에서 숫자 줄(1~0, -, =)은 첫째 휠, 아래 줄(Z~/)은 두 손의 코드 종류 휠.
+   * 지금 울리는 항목의 키를 다시 누르면 OFF. 처리한 키면 true.
+   */
+  keySelect(code) {
+    if (this.state.input !== 'manual' || this.settingsOpen || !this.isReady()) return false;
+    const { product, hands, config, current, armed } = this.state;
+    const hit = wheelKey(code, { product, hands });
+    if (!hit) return false;
+    const [type, values] = product === 'choir' ? ['choir', config.choir]
+      : hands === 'one' ? ['chord', config.chords]
+        : hit.wheel === 0 ? ['root', config.roots] : ['quality', config.qualities];
+    if (hit.index >= values.length) return true; // 휠에 없는 자리: 다른 단축키로 넘기지 않고 무시
+    const value = values[hit.index];
+    const same = type === 'chord' ? current.chord?.root === value.root && current.chord?.quality === value.quality
+      : current[type] === value;
+    if (armed && same) this.stop('OFF · 같은 키를 다시 누르면 연주합니다.');
+    else this.select({ type, value });
+    return true;
+  }
+
+  chordVoicer() {
+    this.voicer ??= new Voicer({ style: this.styles?.voicing, smooth: this.styles?.smooth });
+    return this.voicer;
+  }
+
   render() {
-    this.ui.render({ ...this.state, ready: this.isReady(), cameraAvailable: this.hasCamera() });
+    this.ui.render({ ...this.state, styles: this.styles, ready: this.isReady(), cameraAvailable: this.hasCamera() });
     document.getElementById('stage').dataset.product = this.state.product;
     const chord = this.state.product === 'chord';
     // 시작 카드: 제목과 한 줄 설명만 바꾼다 (아이콘·구조는 그대로)
@@ -83,6 +159,8 @@ export class Performance {
     const audio = this.getAudio();
     audio.accompaniment?.release({ immediate: true });
     audio.setGesture(quietGesture());
+    // 전체 정지·모드 변경 뒤에는 보이싱도 기본 높이에서 새로 시작 (OFF·핀치 쉼은 이어서)
+    if (all) this.voicer?.reset();
     // Center OFF owns this instrument only. Existing loops keep their transport;
     // global stop separately silences the master and pauses those loops.
     if (all) { audio.setOutputMuted?.(true); this.onStop(options); }
@@ -160,9 +238,10 @@ export class Performance {
     const chord = this.state.current.chord;
     if (!chord) { this.state.status = '근음과 코드 종류를 모두 선택하세요.'; return; }
     const audio = this.getAudio();
-    this.state.armed = !!audio.accompaniment?.setChord(chordNotes(chord));
+    this.state.armed = !!audio.accompaniment?.setChord(this.chordVoicer().voice(chord));
     const release = this.state.input === 'hands' ? '핀치를 놓으면 쉼' : 'OFF로 정지';
-    this.state.status = this.state.armed ? `${chordLabel(chord)} 연주 중 · ${release}` : '연주를 시작할 수 없어요. 세션을 다시 시작해 주세요.';
+    const voicing = styleInfo('voicing', this.chordVoicer().style);
+    this.state.status = this.state.armed ? `${chordLabel(chord)} · ${voicing.short} 연주 중 · ${release}` : '연주를 시작할 수 없어요. 세션을 다시 시작해 주세요.';
   }
 
   rearmLegacy() { if (this.legacy && !this.settingsOpen) this.resume(); }
@@ -197,6 +276,7 @@ export class Performance {
       centers: geometry.map(g => g.center), radius: Math.min(...geometry.map(g => g.radius)),
     });
     const points = hands.map(h => ({ ...h, palm: mapPoint(h.palm) }));
+    this.ui.showHands?.(points.map(h => ({ x: h.palm.x, y: h.palm.y, pinch: !!h.pinch })));
     const result = this.controller.update(points, now);
     if (this.blocked) {
       // A visible release is fresh intent after a blur/watchdog/global stop.

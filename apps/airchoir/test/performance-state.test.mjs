@@ -343,3 +343,141 @@ test('choir camera loss/fist clears the preset without assigning pinch to a new 
   assert.equal(p.state.armed, false);
   assert.equal(p.state.current.choir, null);
 });
+
+test('화음 성격: 보이싱을 바꾸면 들고 있는 코드를 바로 다시 쌓고, 합창 성격은 엔진에 넘기고, 선택만 저장한다', t => {
+  const { p, events } = setup(t, { input: 'manual' });
+  p.styles = { choir: 'classic', voicing: 'close', smooth: true };
+  const params = [];
+  p.getAudio().setParams = value => params.push(value);
+  p.select({ type: 'chord', value: { root: 0, quality: 'maj' } });
+  assert.deepEqual(sounds(events).at(-1), ['chord', [48, 52, 55]]);
+
+  assert.equal(p.setStyle('voicing', 'open'), true);
+  assert.deepEqual(sounds(events).at(-1), ['chord', [36, 43, 52, 60, 67]], '연주 중인 C를 오픈 보이싱으로');
+  assert.equal(p.state.armed, true);
+  assert.match(p.state.status, /C · 오픈 연주 중/);
+  const saved = events.filter(event => event[0] === 'save' && event[1] === 'airchoir.harmony.v1').at(-1);
+  assert.deepEqual(JSON.parse(saved[2]), { choir: 'classic', voicing: 'open', smooth: true, swipe: true });
+
+  assert.equal(p.setStyle('voicing', 'open'), false, '같은 값은 다시 쌓지 않음');
+  assert.equal(p.setStyle('voicing', '없는 성격'), false);
+  assert.equal(p.setStyle('volume', 1), false);
+  assert.equal(p.setStyle('choir', 'ballad'), true);
+  assert.deepEqual(params.at(-1), { style: 'ballad' });
+
+  // H 키: 지금 악기(코드)의 성격을 다음으로
+  assert.equal(p.cycleStyle(), true);
+  assert.equal(p.styles.voicing, 'power');
+  assert.deepEqual(sounds(events).at(-1), ['chord', [36, 43, 48, 55]]);
+
+  // 부드럽게 잇기: 공통음 C를 남기고 F로. 전체 정지 뒤에는 기본 높이에서 새로
+  p.setStyle('voicing', 'close');
+  p.select({ type: 'chord', value: { root: 5, quality: 'maj' } });
+  assert.deepEqual(sounds(events).at(-1), ['chord', [48, 53, 57]]);
+  p.stop('all', true);
+  p.select({ type: 'chord', value: { root: 5, quality: 'maj' } });
+  assert.deepEqual(sounds(events).at(-1), ['chord', [53, 57, 60]]);
+  assert.equal(p.setStyle('smooth', false), true);
+  p.select({ type: 'chord', value: { root: 0, quality: 'maj' } });
+  assert.deepEqual(sounds(events).at(-1), ['chord', [48, 52, 55]]);
+});
+
+test('화음 성격: 합창에서 H는 합창 쌓기 방식을 바꾸고 설명을 상태 줄에 보여 준다', t => {
+  const { p } = setup(t, { product: 'choir', input: 'hands' });
+  p.styles = { choir: 'drone', voicing: 'close', smooth: true };
+  const params = [];
+  p.getAudio().setParams = value => params.push(value);
+  assert.equal(p.cycleStyle(), true);
+  assert.equal(p.styles.choir, 'classic', '마지막 다음은 처음');
+  assert.deepEqual(params, [{ style: 'classic' }]);
+  assert.match(p.state.status, /정석 3도/);
+  assert.equal(p.styles.voicing, 'close');
+});
+
+test('키보드 연주: 숫자 줄로 휠 항목을 고르고, 울리는 항목의 키를 다시 누르면 OFF', t => {
+  const { p, events } = setup(t, { input: 'manual' });
+  p.styles = { choir: 'classic', voicing: 'close', smooth: false };
+  assert.equal(p.keySelect('Digit1'), true);
+  assert.deepEqual(sounds(events).at(-1), ['chord', [48, 52, 55]]);
+  assert.equal(p.state.armed, true);
+  p.keySelect('Digit6'); // 기본 휠 여섯째 = Am
+  assert.deepEqual(p.state.current.chord, { root: 9, quality: 'min' });
+  const before = sounds(events).length;
+  assert.equal(p.keySelect('Digit6'), true);
+  assert.equal(p.state.armed, false, '같은 키 = OFF');
+  assert.equal(sounds(events).length, before);
+  assert.equal(p.keySelect('Digit9'), true, '휠에 없는 자리는 다른 단축키로 넘기지 않고 무시');
+  assert.equal(p.state.armed, false);
+  assert.equal(p.keySelect('KeyZ'), false, '한 손 코드는 아래 줄을 쓰지 않음');
+
+  // 두 손: 숫자 줄 = 근음, 아래 줄 = 코드 종류
+  p.change('hands', 'two');
+  p.keySelect('Digit4');
+  assert.equal(p.state.armed, false, '근음만으로는 소리 나지 않음');
+  p.keySelect('KeyX');
+  assert.deepEqual(p.state.current.chord, { root: 5, quality: 'min' });
+  assert.deepEqual(sounds(events).at(-1), ['chord', [53, 56, 60]]);
+});
+
+test('키보드 연주: 손동작 조작·설정 중·세션 전에는 키를 가로채지 않는다', t => {
+  const { p, env, events } = setup(t, { input: 'hands' });
+  assert.equal(p.keySelect('Digit1'), false);
+  p.state.input = 'manual';
+  p.ui.settingsOpen = true;
+  assert.equal(p.keySelect('Digit1'), false);
+  p.ui.settingsOpen = false;
+  env.ready = false;
+  assert.equal(p.keySelect('Digit1'), false);
+  assert.deepEqual(sounds(events), []);
+});
+
+test('키보드 연주: 합창 휠은 숫자로 인원을 고르고, Shift+H(이전)로 화음 성격을 되돌린다', t => {
+  const { p, events } = setup(t, { product: 'choir', input: 'manual' });
+  p.styles = { choir: 'classic', voicing: 'close', smooth: true };
+  p.getAudio().setParams = () => {};
+  const flashes = [];
+  p.ui.flashStyle = info => flashes.push(info.id);
+  p.keySelect('Digit3');
+  const gesture = events.filter(event => event[0] === 'gesture').at(-1)[1];
+  assert.equal(gesture.preset, 3);
+  assert.equal(p.state.current.choir, 3);
+  p.keySelect('Digit3');
+  assert.equal(p.state.current.choir, null, '같은 키 = OFF');
+  assert.equal(p.cycleStyle(-1), true);
+  assert.equal(p.styles.choir, 'drone', '처음의 이전은 마지막');
+  p.cycleStyle(1);
+  assert.equal(p.styles.choir, 'classic');
+  assert.deepEqual(flashes, ['drone', 'classic'], '바꿀 때마다 무대에 이름을 띄운다');
+});
+
+test('손 휙으로 화음 성격: 손동작 조작에서만, 끄면 넘기지 않고, 소리 없이 정지 뒤에도 바꿀 수 있다', t => {
+  const { p, page, env } = setup(t, { product: 'choir', input: 'hands' });
+  p.styles = { choir: 'classic', voicing: 'close', smooth: true, swipe: true };
+  p.getAudio().setParams = () => {};
+  assert.equal(p.swipeStyle(1), true);
+  assert.equal(p.styles.choir, 'ballad');
+  assert.equal(p.swipeStyle(-1), true);
+  assert.equal(p.styles.choir, 'classic');
+  assert.equal(p.swipeStyle(0), false);
+  p.stop('all', true);
+  assert.equal(p.swipeStyle(1), true, '전체 정지 뒤에도');
+  p.setStyle('swipe', false);
+  assert.equal(p.swipeStyle(1), false, '꺼 두면 넘기지 않음');
+  assert.equal(p.styles.choir, 'ballad');
+  p.setStyle('swipe', true);
+  page.hidden = true;
+  assert.equal(p.swipeStyle(1), false, '페이지가 숨겨지면');
+  page.hidden = false;
+  p.ui.settingsOpen = true;
+  assert.equal(p.swipeStyle(1), false, '설정 중');
+  p.ui.settingsOpen = false;
+  env.ready = false;
+  assert.equal(p.swipeStyle(1), false, '세션 전');
+  env.ready = true;
+  p.state.input = 'manual';
+  assert.equal(p.swipeStyle(1), false, '클릭·키보드 조작');
+  // 코드 악기 손동작에서는 보이싱을 넘긴다
+  p.state.product = 'chord'; p.state.input = 'hands';
+  assert.equal(p.swipeStyle(1), true);
+  assert.equal(p.styles.voicing, 'ballad');
+});
