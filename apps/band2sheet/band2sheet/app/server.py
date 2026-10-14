@@ -218,6 +218,36 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except RuntimeError as e:
             raise HTTPException(409, str(e))
 
+    @app.post("/api/jobs/{job_id}/reanalyze")
+    def reanalyze_job(job_id: str, req: AnalyzeRequest):
+        """끝난 작업을 바꾼 설정(분리 품질·악기·곡 정보·가사)으로 다시 분석."""
+        job_or_404(job_id)
+        try:
+            return asdict(manager.reanalyze(job_id, req.options))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+
+    @app.get("/api/jobs/{job_id}/pdf/{sheet_dir}/{name}")
+    def sheet_pdf(job_id: str, sheet_dir: str, name: str):
+        """화면의 키·파트 그대로 PDF 악보 (없으면 지금 만든다)."""
+        job = job_or_404(job_id)
+        if not sheet_dir.startswith("sheets_") or not SAFE.match(sheet_dir) or not SAFE.match(name):
+            raise HTTPException(400, "잘못된 경로입니다.")
+        try:
+            pdf = manager.ensure_pdf(job_id, sheet_dir, name)
+        except KeyError:
+            raise HTTPException(404, "악보가 없습니다.")
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+        key = sheet_dir.removeprefix("sheets_")
+        title = f"{_file_title(job.title)}_{name}_{key}"
+        ascii_name = re.sub(r"[^A-Za-z0-9_\-]+", "_", title).strip("_")[:60] or "band2sheet"
+        return FileResponse(pdf, media_type="application/pdf", headers={
+            "Content-Disposition": f'attachment; filename="{ascii_name}.pdf"; '
+                                   f"filename*=UTF-8''{_quote(title)}.pdf"})
+
     @app.get("/api/jobs/{job_id}/source/{kind}")
     def source_file(job_id: str, kind: str):
         job = job_or_404(job_id)

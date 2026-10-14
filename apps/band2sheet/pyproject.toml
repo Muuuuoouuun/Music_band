@@ -46,7 +46,7 @@ band2sheet = "band2sheet.cli:main"
 packages = ["band2sheet", "band2sheet.app"]
 
 [tool.setuptools.package-data]
-"band2sheet.app" = ["static/*", "static/vendor/*"]
+"band2sheet.app" = ["static/*", "static/vendor/*", "static/vendor/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

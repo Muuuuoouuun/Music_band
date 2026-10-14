@@ -252,7 +252,7 @@ def _separate(mix: Path, work: Path, device: str | None, log: Log) -> tuple[np.n
     from .separate import separate
 
     try:
-        stems = separate(mix, work / "stems", "htdemucs", device)
+        stems = separate(mix, work / "stems", "htdemucs", device, log=log)
     except Exception as e:  # 모델 다운로드 실패 등
         log(f"   ! 분리 생략 ({e})")
         return None

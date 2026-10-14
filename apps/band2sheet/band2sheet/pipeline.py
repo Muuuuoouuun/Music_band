@@ -90,7 +90,7 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
         # 2) 분리
         step(0.08, "② 악기별 분리 중 — 곡 길이와 장비에 따라 수 분 걸립니다")
         if opts.model:
-            sep = Stems(stems=separate(mix_path, stems_out, opts.model, opts.device),
+            sep = Stems(stems=separate(mix_path, stems_out, opts.model, opts.device, log=log),
                         notes=[f"악기: Demucs {opts.model}"])
         else:
             sep = separate_detailed(mix_path, stems_out, opts.quality if opts.quality in QUALITY

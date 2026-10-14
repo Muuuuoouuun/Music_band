@@ -179,3 +179,45 @@ def test_split_songs_job(client, tmp_path):
     assert child["title"] == "둘째 곡" and child["parent"] == job_id
     assert abs(child["options"]["start"] - (second["start"] - 1)) < 0.01
     assert "split_songs" not in child["options"]
+
+
+def _wait(client, job_id, until=("done", "error"), tries=300):
+    for _ in range(tries):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in until:
+            return job
+        time.sleep(0.3)
+    return job
+
+
+def test_pdf_on_demand_and_reanalyze(client, tmp_path):
+    """PDF 저장(지금 키·파트) + 바꾼 설정으로 다시 분석 (MIDI 변환이라 분석 모델 없이)."""
+    from tests.test_recognition import _demo_midi
+
+    data = _demo_midi(tmp_path / "song.mid", True).read_bytes()
+    job_id = client.post("/api/jobs", files={"file": ("song.mid", data)},
+                         data={"options": '{"title": "미디 곡"}'}).json()["id"]
+    job = _wait(client, job_id)
+    assert job["status"] == "done", job.get("error")
+    sheet_dir = job["result"]["sheet_dir"]
+
+    assert client.get(f"/api/jobs/{job_id}/pdf/{sheet_dir}/..%2Fjob").status_code in (400, 404)
+    assert client.get(f"/api/jobs/{job_id}/pdf/{sheet_dir}/nothing_here").status_code == 404
+    assert client.get(f"/api/jobs/{job_id}/pdf/other/lead_sheet").status_code == 400
+    info = client.get("/api/info").json()
+    r = client.get(f"/api/jobs/{job_id}/pdf/{sheet_dir}/lead_sheet")
+    if info["pdf"]:
+        assert r.status_code == 200 and r.content.startswith(b"%PDF")
+        assert "attachment" in r.headers["content-disposition"]
+    else:
+        assert r.status_code == 409
+
+    assert client.post(f"/api/jobs/{job_id}/reanalyze", json={"options": {"split_songs": True}}).status_code == 400
+    r = client.post(f"/api/jobs/{job_id}/reanalyze", json={"options": {"title": "다시 만든 곡", "bpm": 90}})
+    assert r.status_code == 200, r.text
+    assert client.post(f"/api/jobs/{job_id}/reanalyze", json={"options": {}}).status_code in (200, 409)
+    job = _wait(client, job_id)
+    assert job["status"] == "done", job.get("error")
+    assert job["title"] == "다시 만든 곡" and job["options"]["bpm"] == 90
+    assert client.get(f"/api/jobs/{job_id}/view").json()["bars"]
+    assert client.post("/api/jobs/missing00/reanalyze", json={"options": {}}).status_code == 404

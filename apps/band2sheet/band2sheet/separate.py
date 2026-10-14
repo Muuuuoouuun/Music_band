@@ -12,9 +12,13 @@ audio-separator 가 없거나 모델을 받지 못하면 해당 단계만 건너
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import re
 import shutil
+import tempfile
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -63,21 +67,108 @@ def pick_device(device: str | None = None) -> str:
 # Demucs
 # ---------------------------------------------------------------------------
 
+# Meta 의 모델 서버(dl.fbaipublicfiles.com)·HuggingFace 에 닿지 않는 망에서 쓰는 예비 받을 곳.
+# 파일 이름 끝의 8자리(예: 5c90dfd2-34c22ccb.th)가 SHA-256 앞자리라서 받은 뒤 그대로 검증한다.
+# BAND2SHEET_DEMUCS_MIRROR 로 바꾸거나(쉼표로 여러 개) 빈 값으로 끌 수 있다.
+DEMUCS_MIRRORS = (
+    "https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/",
+)
+
+
+def _demucs_mirrors() -> list[str]:
+    env = os.environ.get("BAND2SHEET_DEMUCS_MIRROR")
+    urls = DEMUCS_MIRRORS if env is None else [u.strip() for u in env.split(",")]
+    return [u if u.endswith("/") else u + "/" for u in urls if u]
+
+
+def _demucs_weight_files(model_name: str) -> list[str]:
+    """모델(또는 모델 묶음) 이름 -> 필요한 가중치 파일 이름들 (예: ['5c90dfd2-34c22ccb.th'])."""
+    import yaml
+    from demucs.pretrained import REMOTE_ROOT, _parse_remote_files
+
+    remote = _parse_remote_files(REMOTE_ROOT / "files.txt")  # {서명: URL}
+    bag = REMOTE_ROOT / f"{model_name}.yaml"
+    sigs = yaml.safe_load(bag.read_text())["models"] if bag.exists() else [model_name]
+    return [remote[s].rsplit("/", 1)[1] for s in sigs if s in remote]
+
+
+def _sha256_prefix(path: Path, n: int) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()[:n]
+
+
+def fetch_demucs_weights(model_name: str, log: Log | None = None) -> list[Path]:
+    """없는 Demucs 가중치를 예비 받을 곳에서 받아 torch 캐시에 넣는다 (해시가 맞을 때만).
+
+    Demucs 는 torch.hub 캐시(TORCH_HOME/hub/checkpoints)에 같은 이름의 파일이 있으면
+    다시 받지 않으므로, 여기에 넣어 두면 그다음 get_model 이 그대로 쓴다.
+    """
+    import torch
+
+    ckpt_dir = Path(torch.hub.get_dir()) / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    fetched: list[Path] = []
+    for name in _demucs_weight_files(model_name):
+        dst = ckpt_dir / name
+        expected = Path(name).stem.rsplit("-", 1)[-1]
+        if dst.exists() and _sha256_prefix(dst, len(expected)) == expected:
+            continue
+        for base in _demucs_mirrors():
+            fd, tmp = tempfile.mkstemp(dir=ckpt_dir, suffix=".part")
+            os.close(fd)
+            try:
+                if log:
+                    log(f"   · Demucs 가중치 {name} 를 예비 받을 곳에서 내려받는 중")
+                urllib.request.urlretrieve(base + name, tmp)
+                got = _sha256_prefix(Path(tmp), len(expected))
+                if got != expected:
+                    raise RuntimeError(f"해시가 다릅니다 (기대 {expected}, 받은 파일 {got})")
+                os.chmod(tmp, 0o644)  # mkstemp 의 0600 대신 torch 가 받은 파일과 같은 권한
+                os.replace(tmp, dst)
+                fetched.append(dst)
+                break
+            except Exception as e:
+                if log:
+                    log(f"   ! {base} 에서 받지 못함: {e}")
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+    return fetched
+
+
+def load_demucs_model(model_name: str, log: Log | None = None):
+    """Demucs 모델을 불러온다. 기본 경로로 못 받으면 예비 받을 곳에서 받아 한 번 더 시도."""
+    from demucs.pretrained import get_model
+
+    try:
+        return get_model(model_name)
+    except Exception as first:
+        try:
+            fetched = fetch_demucs_weights(model_name, log)
+        except Exception:
+            fetched = []
+        if not fetched:
+            raise first
+        return get_model(model_name)
+
+
 def separate(mix_path: Path, out_dir: Path, model_name: str = "htdemucs_6s",
-             device: str | None = None, shifts: int = 1) -> dict[str, Path]:
+             device: str | None = None, shifts: int = 1, log: Log | None = None) -> dict[str, Path]:
     """Demucs 로 분리하고 {스템 이름: wav 경로} 를 반환."""
     try:
         import torch
         from demucs.apply import apply_model
         from demucs.audio import AudioFile
-        from demucs.pretrained import get_model
     except ImportError as e:  # pragma: no cover - 설치 안내
         raise RuntimeError("음원 분리에는 demucs 가 필요합니다: pip install demucs") from e
 
     out_dir.mkdir(parents=True, exist_ok=True)
     device = pick_device(device)
     try:
-        model = get_model(model_name)
+        model = load_demucs_model(model_name, log)
     except Exception as e:
         raise RuntimeError(
             f"Demucs 모델({model_name})을 불러오지 못했습니다. 첫 실행 시 인터넷에서 모델을 내려받으니 "
@@ -167,7 +258,7 @@ def separate_detailed(mix_path: Path, out_dir: Path, quality: str = "standard",
     log(f"   · 악기 분리 (Demucs {demucs_model})")
     # 고품질: 시간축을 조금씩 옮겨 여러 번 분리한 뒤 평균 (Demucs shifts) — 더 깨끗하지만 느림
     demucs_out = separate(source, work / "demucs", demucs_model, device,
-                          shifts=2 if quality == "high" else 1)
+                          shifts=2 if quality == "high" else 1, log=log)
     result.notes.append(f"악기: Demucs {demucs_model}")
     for name, path in demucs_out.items():
         if name == "vocals" and roformer_vocals is not None:

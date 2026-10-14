@@ -399,6 +399,66 @@ class JobManager(EditMixin, PlaybackMixin):
             self._submit_locked(job)
         return job
 
+    # 다시 분석할 때 바꿀 수 있는 설정 (곡 나누기·받기 옵션은 처음 작업에서만 쓴다)
+    REANALYZE_OPTIONS = ("quality", "split_vocals", "split_drums", "cleanup", "pdf", "stems", "title",
+                         "time_signature", "bpm", "target_key", "start", "duration", "lyrics", "language")
+
+    def reanalyze(self, job_id: str, options: dict) -> Job:
+        """끝난(또는 실패한) 악보 작업을 바꾼 설정으로 처음부터 다시 분석한다.
+
+        받아 둔 원본(input.*)을 그대로 쓰고, 이전 분석 결과(project.json)는 project.prev.json 으로
+        남긴다. 분리 음원·미리듣기는 새 설정으로 다시 만들어야 하므로 지운다.
+        """
+        unknown = sorted(set(options) - set(self.REANALYZE_OPTIONS))
+        if unknown:
+            raise ValueError(f"다시 분석할 때 바꿀 수 없는 설정입니다: {', '.join(unknown)}")
+        with self.lock:
+            job = self.get(job_id)
+            if job.kind != "score":
+                raise RuntimeError("악보 작업만 다시 분석할 수 있습니다.")
+            if job.status not in ("done", "error"):
+                raise RuntimeError("분석이 끝났거나 실패한 작업만 다시 분석할 수 있습니다.")
+            d = self.job_dir(job_id)
+            if not any(d.glob("input.*")):
+                raise RuntimeError("원본 음원이 없어 다시 분석할 수 없습니다.")
+            if any(k[0] == job_id and st.get("status") == "working" for k, st in self._playback.items()):
+                raise RuntimeError("다른 키의 듣기 음원을 만드는 중입니다. 잠시 뒤 다시 시도해 주세요.")
+            if (d / "project.json").exists():
+                shutil.copyfile(d / "project.json", d / "project.prev.json")
+            for sub in ("preview", "stems", "work", "input_stems"):
+                shutil.rmtree(d / sub, ignore_errors=True)
+            for key in [k for k in self._playback if k[0] == job_id]:
+                self._playback.pop(key, None)
+            title = str(options.get("title") or "").strip()[:120]
+            if title:
+                job.title = title
+            job.options = {**job.options, **options, "fetch_only": False, "split_songs": False}
+            job.result, job.renders = None, {}
+            job.status, job.error, job.progress, job.stage = "queued", None, 0.0, "대기 중"
+            job.log.append("— 바꾼 설정으로 다시 분석 —")
+            self._submit_locked(job)
+        return job
+
+    def ensure_pdf(self, job_id: str, sheet_dir: str, name: str) -> Path:
+        """이 키의 악보(MusicXML)를 PDF 로 만든다 (이미 있으면 그대로). 실패하면 RuntimeError."""
+        from ..pipeline import export_pdf
+
+        job = self.get(job_id)
+        if job.status != "done":
+            raise RuntimeError("분석이 끝난 뒤에 PDF 를 만들 수 있습니다.")
+        folder = self.job_dir(job_id) / sheet_dir
+        xml = folder / f"{name}.musicxml"
+        if not xml.is_file():
+            raise KeyError(name)
+        pdf = xml.with_suffix(".pdf")
+        with self._score_lock:  # 같은 파일을 두 번 동시에 만들지 않게
+            if pdf.is_file() and pdf.stat().st_mtime >= xml.stat().st_mtime:
+                return pdf
+            out = export_pdf(xml)
+        if out is None or not out.is_file():
+            raise RuntimeError("PDF 를 만들지 못했습니다. MuseScore 나 verovio·cairosvg·pypdf 가 필요합니다.")
+        return out
+
     def source_file(self, job_id: str, kind: str) -> Path:
         job = self.get(job_id)
         name = (job.source or {}).get(kind)

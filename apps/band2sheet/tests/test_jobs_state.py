@@ -233,3 +233,66 @@ def test_terminal_status_is_saved_before_deletion_is_allowed(
     assert json.loads((manager.job_dir(job.id) / "job.json").read_text())["status"] == terminal
     manager.delete(job.id)
     assert not manager.job_dir(job.id).exists()
+
+
+def done_job(manager, jobs_module, job_id="done1"):
+    job = jobs_module.Job(job_id, "Synthetic", "input.wav", 0, {"quality": "standard", "split_songs": True},
+                          status="done", result={"key_short": "G"}, renders={"G": {}})
+    d = manager.job_dir(job.id)
+    d.mkdir()
+    (d / "input.wav").write_bytes(b"synthetic input")
+    (d / "project.json").write_text('{"title": "edited"}', encoding="utf-8")
+    for sub in ("preview/k+2", "stems", "work"):
+        (d / sub).mkdir(parents=True)
+        (d / sub / "x.mp3").write_bytes(b"old")
+    manager.jobs[job.id] = job
+    manager._save(job)
+    return job
+
+
+def test_reanalyze_restarts_a_done_job_with_new_options(manager, jobs_module):
+    job = done_job(manager, jobs_module)
+    manager._playback[(job.id, 2)] = {"status": "ready"}
+    manager._playback[("other", 2)] = {"status": "ready"}
+
+    out = manager.reanalyze(job.id, {"quality": "high", "lyrics": True, "title": "새 제목"})
+
+    d = manager.job_dir(job.id)
+    assert out is job and job.status == "queued" and job.progress == 0.0 and job.error is None
+    assert job.title == "새 제목"
+    assert job.options["quality"] == "high" and job.options["lyrics"] is True
+    assert job.options["split_songs"] is False and job.options["fetch_only"] is False
+    assert job.result is None and job.renders == {}
+    # The previous analysis is kept as a backup; stale audio caches are removed.
+    assert (d / "project.prev.json").read_text(encoding="utf-8") == '{"title": "edited"}'
+    assert not (d / "preview").exists() and not (d / "stems").exists() and not (d / "work").exists()
+    assert (job.id, 2) not in manager._playback and ("other", 2) in manager._playback
+    assert len(manager.pool.calls) == 1
+    assert json.loads((d / "job.json").read_text(encoding="utf-8"))["status"] == "queued"
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "ready", "choose"])
+def test_reanalyze_rejects_jobs_that_are_not_finished(manager, jobs_module, status):
+    job = done_job(manager, jobs_module)
+    job.status = status
+    with pytest.raises(RuntimeError):
+        manager.reanalyze(job.id, {"quality": "fast"})
+    assert manager.pool.calls == [] and (manager.job_dir(job.id) / "preview").exists()
+
+
+def test_reanalyze_rejects_unknown_options_and_busy_playback(manager, jobs_module):
+    job = done_job(manager, jobs_module)
+    with pytest.raises(ValueError):
+        manager.reanalyze(job.id, {"split_songs": True})
+    manager._playback[(job.id, 3)] = {"status": "working"}
+    with pytest.raises(RuntimeError):
+        manager.reanalyze(job.id, {"quality": "fast"})
+    assert job.status == "done" and manager.pool.calls == []
+
+
+def test_reanalyze_requires_the_original_input(manager, jobs_module):
+    job = done_job(manager, jobs_module)
+    (manager.job_dir(job.id) / "input.wav").unlink()
+    with pytest.raises(RuntimeError):
+        manager.reanalyze(job.id, {})
+    assert job.status == "done"
