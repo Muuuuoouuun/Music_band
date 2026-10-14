@@ -64,7 +64,10 @@ function show(view) {
   if (view !== "remix") { $("#x-video").pause(); $("#x-audio").pause(); }
   if (view !== "choose" && state.chooseAudio) state.chooseAudio.pause();
   if (view !== "new") {
-    if (state.rec) stopRecording();  // 다른 화면으로 가면 거기까지 녹음해 둔다 (새 작업에서 이어서 시작)
+    if (state.rec) {  // 다른 화면으로 가면 거기까지 녹음해 둔다 (새 작업에서 이어서 시작)
+      if (!state.rec.stopping) toast("녹음을 멈췄어요. 새 작업에서 이어서 쓸 수 있어요");
+      stopRecording();
+    }
     $("#rec-audio").pause();
   }
 }
@@ -222,7 +225,7 @@ function setFile(f, capture = null) {
   state.capture = f ? capture : null;
   $("#file-name").textContent = f && !capture ? `${f.name} (${(f.size / 1048576).toFixed(1)} MB)` : "";
   if (f) $("#url").value = "";  // 파일을 고르면 링크 대신 파일 사용
-  if (!capture) showListen("idle");
+  if (!capture) showListen("idle", false);  // 프로그램이 되돌리는 거라 포커스는 그대로 둔다
   updateStartButton();
 }
 
@@ -390,11 +393,18 @@ function canRecord(kind) {
   return kind === "tab" ? typeof md.getDisplayMedia === "function" : typeof md.getUserMedia === "function";
 }
 
-function showListen(mode) {
+function showListen(mode, moveFocus = true) {
+  const card = $("#listen-card");
+  // 눌렀던 버튼이 숨겨지면 포커스가 body 로 떨어지므로, 카드 안(또는 body)에 있었을 때만 새 상태의 버튼으로 옮긴다
+  const active = document.activeElement;
+  const hadFocus = !active || active === document.body || card.contains(active);
   $("#listen-idle").classList.toggle("hidden", mode !== "idle");
   $("#listen-live").classList.toggle("hidden", mode !== "live");
   $("#listen-done").classList.toggle("hidden", mode !== "done");
-  $("#listen-card").classList.toggle("recording", mode === "live");
+  card.classList.toggle("recording", mode === "live");
+  if (!moveFocus || !hadFocus) return;
+  const target = $({ live: "#rec-stop", done: "#rec-again", idle: "#rec-mic" }[mode]);
+  if (target && !target.disabled) target.focus({ preventScroll: true });
 }
 
 function initListen() {
@@ -408,13 +418,16 @@ function initListen() {
     $("#listen-hint").textContent = !secure ?
       "마이크·컴퓨터 소리는 이 컴퓨터(localhost)나 https 주소로 열었을 때만 쓸 수 있어요. 휴대폰에서는 녹음 앱으로 녹음한 파일을 올려 주세요." :
       !mic ? "이 브라우저는 녹음을 지원하지 않아요. 녹음 파일을 올려 주세요." :
-      "컴퓨터 소리 듣기는 컴퓨터의 Chrome·Edge 에서 됩니다. 마이크 녹음은 여기서 바로 할 수 있어요.";
+      "컴퓨터 소리 듣기는 컴퓨터의 Chrome·Edge 에서 됩니다. 마이크 녹음은 여기서 바로 할 수 있어요. 최대 10분까지 녹음돼요.";
   }
   $("#rec-mic").addEventListener("click", () => startRecording("mic"));
   $("#rec-tab").addEventListener("click", () => startRecording("tab"));
   $("#rec-stop").addEventListener("click", () => stopRecording());
   $("#rec-again").addEventListener("click", () => startRecording(state.capture || "mic"));
-  $("#rec-discard").addEventListener("click", () => setFile(null));
+  $("#rec-discard").addEventListener("click", () => {
+    setFile(null);
+    showListen("idle");  // 지우기 버튼이 숨겨지니 포커스를 녹음 버튼으로
+  });
 }
 
 async function startRecording(kind) {
@@ -467,9 +480,10 @@ async function startRecording(kind) {
   renderLinkHint(null);
   $("#rec-what").textContent = kind === "tab" ? "컴퓨터 소리 듣는 중" : "녹음 중";
   rec.tip = kind === "tab" ?
-    "다른 탭에서 영상을 처음부터 틀어 주세요. 곡이 끝나면 멈추기를 누르세요." :
-    "곡이 끝나면 멈추기를 누르세요. 앞뒤의 빈 소리는 자동으로 잘라요.";
+    "다른 탭에서 영상을 처음부터 틀어 주세요. 곡이 끝나면 멈추기를 누르세요. 최대 10분까지 녹음돼요." :
+    "곡이 끝나면 멈추기를 누르세요. 앞뒤의 빈 소리는 자동으로 잘라요. 최대 10분까지 녹음돼요.";
   $("#rec-tip").textContent = rec.tip;
+  $("#rec-tip").classList.remove("warn", "clip");
   showListen("live");
   startMeter(rec);
   updateStartButton();
@@ -493,13 +507,14 @@ function startMeter(rec) {
     if (state.rec !== rec) return;
     const sec = (Date.now() - rec.started) / 1000;
     $("#rec-time").textContent = fmtTime(sec);
-    if (sec >= REC_MAX_SEC) { stopRecording(); return; }
+    if (sec >= REC_MAX_SEC) { toast("10분이 되어 녹음을 멈췄어요"); stopRecording(); return; }
     if (rec.analyser) {
       rec.analyser.getFloatTimeDomainData(buf);
       let peak = 0, sum = 0;
       for (const v of buf) { const a = Math.abs(v); if (a > peak) peak = a; sum += v * v; }
       const db = 20 * Math.log10(Math.sqrt(sum / buf.length) + 1e-9);
-      $("#rec-level").style.width = `${Math.max(0, Math.min(100, (db + 60) / 60 * 100)).toFixed(0)}%`;
+      const pct = Math.max(0, Math.min(100, (db + 60) / 60 * 100));
+      $("#rec-level").style.clipPath = `inset(0 ${(100 - pct).toFixed(0)}% 0 0)`;  // 그라데이션은 고정, 레벨만큼만 드러낸다
       const now = Date.now();
       if (peak >= 0.99) rec.clipTimes.push(now);
       rec.clipTimes = rec.clipTimes.filter((t) => now - t < 2000);  // 최근 2초
@@ -510,7 +525,10 @@ function startMeter(rec) {
         rec.quiet > 180 ? (rec.kind === "tab" ?
           "소리가 들어오지 않아요. 고른 탭에서 영상이 재생 중인지, ‘탭 오디오 공유’를 켰는지 확인하세요." :
           "소리가 거의 안 들려요. 마이크 가까이에서 해 주세요.") : rec.tip;
-      if ($("#rec-tip").textContent !== tip) $("#rec-tip").textContent = tip;
+      const tipEl = $("#rec-tip");
+      if (tipEl.textContent !== tip) tipEl.textContent = tip;
+      tipEl.classList.toggle("warn", tip !== rec.tip);  // 기본 안내와 다르면 경고 색
+      tipEl.classList.toggle("clip", clipping);
     }
     rec.raf = requestAnimationFrame(tick);
   };
@@ -871,17 +889,25 @@ function fillAgain(r) {
 }
 
 function updateAgainHarmony() {
-  $("#xa-harmony-parts").classList.toggle("hidden", $("#xa-harmony-style").value !== "classic");
+  // 새 작업 폼처럼: 내 목소리 화음을 넣을 때만 성격·방향을 고르게 한다
+  const voices = (state.again && state.again.style === "harmony") || $("#xa-with-harmony").checked;
+  $("#xa-harmony-style").closest("label").classList.toggle("hidden", !voices);
+  // 위·아래 방향 고르기는 정석 3도에만
+  $("#xa-harmony-parts").classList.toggle("hidden", !voices || $("#xa-harmony-style").value !== "classic");
 }
 
 function initAgain() {
   $("#xa-style").innerHTML = $("#rm-style").innerHTML;
+  $("#xa-harmony-style").innerHTML = $("#rm-harmony-style").innerHTML;  // 화음 성격 목록은 한 곳에서만 관리
+  $("#xa-harmony-style").value = "classic";  // 복사하면서 rm 쪽 selected 가 따라와도 기본값은 정석 3도
   $("#xa-harmony-style").addEventListener("change", updateAgainHarmony);
+  $("#xa-with-harmony").addEventListener("change", updateAgainHarmony);
   $$("#xa-style button").forEach((b) => b.addEventListener("click", () => {
     state.again.style = b.dataset.v;
     $$("#xa-style button").forEach((x) => x.classList.toggle("on", x === b));
     $("#xa-with-harmony").disabled = b.dataset.v === "harmony";
     $("#xa-with-harmony").checked = ["harmony", "full", "acappella"].includes(b.dataset.v);
+    updateAgainHarmony();
   }));
   for (const k of [...MAJOR_KEYS, ...MINOR_KEYS]) $("#xa-key").add(new Option(keyName(k), k));
   $("#xa-auto").addEventListener("click", () => {

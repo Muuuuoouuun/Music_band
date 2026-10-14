@@ -643,6 +643,10 @@ dialog::backdrop { background: #07090fcc; }
 /* 후보정 다시 만들기: 좁은 화면에서 라벨이 한 글자씩 꺾이지 않게 */
 label.inline { flex-wrap: nowrap; white-space: nowrap; }
 .row.wrap > * { flex: 0 1 auto; }
+label.inline select { max-width: 100%; min-width: 0; }
+#xa-harmony-style { max-width: min(100%, 24rem); }
+#rm-harmony-row { flex-wrap: wrap; }
+#rm-harmony-row > label { min-width: min(100%, 220px); }
 #view-remix .notes li { word-break: keep-all; overflow-wrap: anywhere; }
 
 /* 새 작업: 링크 · 들려주기 · 파일 세 가지 입력 */
@@ -661,11 +665,12 @@ label.inline { flex-wrap: nowrap; white-space: nowrap; }
 .url-more > p { margin: 6px 0 0; line-height: 1.55; }
 .listen-card { padding: 24px; display: flex; flex-direction: column; gap: 12px; }
 .listen-card .input-heading { margin: 0; }
+.input-head, .listen-card .input-heading { min-height: 28px; display: flex; align-items: center; }  /* 세 카드의 제목 높이를 맞춘다 */
 .listen-card.dim, .drop.dim { opacity: .55; }
 .listen-buttons { display: grid; gap: 8px; }
-.listen-btn { justify-content: flex-start; gap: 10px; padding: 10px 12px; min-height: 52px; background: #191c24; text-align: left; }
+.listen-btn { white-space: normal; justify-content: flex-start; gap: 10px; padding: 10px 12px; min-height: 52px; background: #191c24; text-align: left; }
 .listen-btn .icon { width: 20px; height: 20px; color: var(--accent); }
-.listen-btn span { display: flex; flex-direction: column; font-size: 13px; font-weight: 600; }
+.listen-btn span { display: flex; flex-direction: column; min-width: 0; font-size: 13px; font-weight: 600; }
 .listen-btn small { font-weight: 400; color: var(--muted); font-size: 11px; margin-top: 2px; }
 .listen-idle > p, .listen-live > p { margin: 10px 0 0; line-height: 1.6; }
 .rec-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -675,18 +680,17 @@ label.inline { flex-wrap: nowrap; white-space: nowrap; }
 @keyframes rec-blink { 50% { opacity: .25; } }
 .rec-time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
 .meter { position: relative; height: 8px; margin-top: 12px; border-radius: 99px; background: #191c24; overflow: hidden; }
-.meter > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--ok) 0 70%, #e8c98a 85%, #ff6b75); transition: width .08s linear; }
+.meter > div { height: 100%; width: 100%; background: linear-gradient(90deg, var(--ok) 0 70%, #e8c98a 85%, #ff6b75); clip-path: inset(0 100% 0 0); transition: clip-path .08s linear; }
 .listen-card.recording { border-color: #6b3b44; }
 .listen-card.clipping .meter { outline: 1px solid #ff6b75; }
 #rec-audio { width: 100%; height: 36px; margin: 10px 0; }
 .listen-done .rec-row button { font-size: 12px; }
-.listen-error:empty, #listen-error:empty { display: none; }
 #listen-error { margin: 0; }
 .kind-row { margin-top: 16px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; align-items: center; }
 .kind-label { font-size: 13px; font-weight: 600; color: var(--text); }
 .kind-seg { margin: 0; }
 .kind-seg button { padding: .45rem .5rem; font-size: 13px; min-width: 0; }
-.kind-seg button small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.kind-seg button small { white-space: normal; text-align: center; word-break: keep-all; overflow-wrap: anywhere; max-width: 100%; }  /* 어절 단위로 줄바꿈 */
 #kind-hint { grid-column: 2; margin: 2px 0 0; line-height: 1.55; }
 .p-cookie-row { max-width: 360px; margin: .4rem 0 .8rem; }
 .job-list .kind-capture { background: #3d3127; color: #ffcf9f; }
@@ -702,10 +706,9 @@ label.inline { flex-wrap: nowrap; white-space: nowrap; }
   #kind-hint { grid-column: 1; }
   .kind-seg { display: grid; grid-template-columns: 1fr 1fr; }
   .kind-seg button { min-height: 48px; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .rec-dot { animation: none; }
-  .meter > div { transition: none; }
+  .small-btn, #rec-stop, .listen-done .rec-row button { min-height: 44px; }
 }
 .listen-live .rec-row { flex-wrap: nowrap; }
+.listen-live .rec-tip.warn { color: #e8c98a; }
+.listen-live .rec-tip.warn.clip { color: var(--danger); }
 #rec-what { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
