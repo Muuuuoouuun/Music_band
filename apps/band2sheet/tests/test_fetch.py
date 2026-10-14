@@ -123,7 +123,9 @@ def test_app_url_job_keep_video_fetch_only(video_url, tmp_path):
     from band2sheet.app.server import create_app
 
     client = TestClient(create_app(tmp_path / "data"))
-    assert client.post("/api/jobs/url", json={"url": "youtube.com/watch?v=x"}).status_code == 400
+    # http(s) 가 아닌 주소는 거부 (https:// 없이 복사한 'youtube.com/…' 은 받는다 — tests/test_input.py)
+    assert client.post("/api/jobs/url", json={"url": "ftp://youtube.com/watch?v=x"}).status_code == 400
+    assert client.post("/api/jobs/url", json={"url": "링크 아님"}).status_code == 400
     assert client.post("/api/jobs/url", json={"url": video_url,
                                               "options": {"audio_format": "ogg"}}).status_code == 400
 

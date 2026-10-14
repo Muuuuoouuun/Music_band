@@ -25,6 +25,13 @@ const state = {
   analysisJobs: new Set(),
   deletingJobs: new Set(),
   startingJob: false,
+  sourceKind: "auto",  // 소리 구성: auto(여러 악기) | voice | piano | guitar
+  rec: null,  // 들려주기 녹음 중
+  capture: null,  // 고른 입력이 들려주기 녹음이면 mic | tab
+  recUrl: null,
+  link: null,  // 링크 미리 확인 결과
+  linkTimer: null,
+  linkRequest: 0,
   job: null,
   result: null,
   tab: "full_score",
@@ -56,6 +63,10 @@ function show(view) {
   if (view !== "source") { $("#s-video").pause(); $("#s-audio").pause(); }
   if (view !== "remix") { $("#x-video").pause(); $("#x-audio").pause(); }
   if (view !== "choose" && state.chooseAudio) state.chooseAudio.pause();
+  if (view !== "new") {
+    if (state.rec) stopRecording();  // 다른 화면으로 가면 거기까지 녹음해 둔다 (새 작업에서 이어서 시작)
+    $("#rec-audio").pause();
+  }
 }
 
 function jobContext() {
@@ -162,6 +173,13 @@ async function loadInfo() {
     "가사 인식 엔진이 설치되지 않았습니다: pip install faster-whisper";
   $("#pdf").disabled = !state.info.pdf;
   if (!state.info.pdf) $("#pdf").parentElement.title = "MuseScore 또는 pip install verovio cairosvg pypdf 필요";
+  fillCookieSelects();
+  $$("#source-kind button").forEach((b) => {
+    const need = kindNeeds(b.dataset.v);
+    b.disabled = !!need;
+    b.title = need ? `채보 엔진 설치 필요: ${need}` : "";
+  });
+  setSourceKind(kindNeeds(state.sourceKind) ? "auto" : state.sourceKind);
   const sep = eng.audio_separator && eng.audio_separator.installed;
   for (const id of ["#split-vocals", "#split-drums"]) {
     $(id).disabled = !sep;
@@ -179,33 +197,389 @@ function urlValue() {
 
 function updateStartButton() {
   const url = urlValue();
-  $("#btn-start").disabled = state.startingJob || !(url || state.file);
+  const problem = url && state.link && state.link.text === url && state.link.problem;
+  const recording = !!state.rec;
+  $("#btn-start").disabled = state.startingJob || recording || !!problem || !(url || state.file);
   $("#btn-start").setAttribute("aria-busy", String(state.startingJob));
   const what = $("#keep-video").checked ? "영상" : "음성";
   $("#btn-start").textContent = state.startingJob ? "시작하는 중…" : url && $("#fetch-only").checked ? `${what} 받기 시작` :
-    url ? `${what} 받아서 악보 만들기` : "악보 만들기 시작";
+    url ? `${what} 받아서 악보 만들기` : recording ? "녹음을 멈추면 시작할 수 있어요" :
+    state.capture ? "녹음으로 악보 만들기" : "악보 만들기 시작";
   $("#max-height").disabled = !$("#keep-video").checked;
-  $("#title").placeholder = url ? "영상 제목 사용" : state.file ? state.file.name.replace(/\.[^.]+$/, "") : "파일 이름 사용";
-  $("#drop").classList.toggle("dim", !!url);
+  $("#title").placeholder = url ? "영상 제목 사용" : state.capture ? "녹음 날짜·시각 사용" :
+    state.file ? state.file.name.replace(/\.[^.]+$/, "") : "파일 이름 사용";
+  $("#drop").classList.toggle("dim", !!url || !!state.capture);
+  $("#listen-card").classList.toggle("dim", !!url && !recording);
 }
 
-function setFile(f) {
+function setFile(f, capture = null) {
+  if (state.recUrl && state.file !== f) {  // 지난 녹음 미리듣기 해제
+    $("#rec-audio").removeAttribute("src");
+    URL.revokeObjectURL(state.recUrl);
+    state.recUrl = null;
+  }
   state.file = f;
-  $("#file-name").textContent = f ? `${f.name} (${(f.size / 1048576).toFixed(1)} MB)` : "";
+  state.capture = f ? capture : null;
+  $("#file-name").textContent = f && !capture ? `${f.name} (${(f.size / 1048576).toFixed(1)} MB)` : "";
   if (f) $("#url").value = "";  // 파일을 고르면 링크 대신 파일 사용
+  if (!capture) showListen("idle");
+  updateStartButton();
+}
+
+// ------------------------------------------------------------------ 소리 구성 (여러 악기 / 노래·허밍 / 피아노 / 기타)
+const KIND_HINTS = {
+  auto: "악기별로 나눠 각각 악보를 만듭니다.",
+  voice: "분리 없이 목소리 멜로디를 채보하고, 반주가 없으니 멜로디에 어울리는 코드를 붙여요. 박자는 따로 정하지 않으면 4/4로 봅니다.",
+  piano: "분리 없이 피아노 하나로 채보합니다 (양손 큰보표·페달).",
+  guitar: "분리 없이 기타 하나로 채보합니다 (오선보 + TAB).",
+};
+
+function kindNeeds(kind) {
+  // 설치가 필요한 엔진 (없으면 고를 수 없게)
+  const eng = state.info ? Object.fromEntries(state.info.engines.map((e) => [e.key, e.installed])) : null;
+  if (!eng) return null;
+  if (kind === "piano" && !eng.piano_hr && !eng.basic_pitch) return "pip install basic-pitch";
+  if (kind === "guitar" && !eng.basic_pitch) return "pip install basic-pitch";
+  return null;
+}
+
+function setSourceKind(kind) {
+  state.sourceKind = kind;
+  $$("#source-kind button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.v === kind);
+    b.setAttribute("aria-pressed", String(b.dataset.v === kind));
+  });
+  let hint = KIND_HINTS[kind] || "";
+  const eng = state.info ? Object.fromEntries(state.info.engines.map((e) => [e.key, e.installed])) : {};
+  if (kind === "auto" && state.info && !eng.demucs) {
+    hint = "악기 분리 엔진(Demucs)이 설치되지 않았어요. 노래·허밍 녹음이면 '노래·허밍'을 고르면 바로 됩니다. (pip install -e \".[ml]\")";
+  }
+  $("#kind-hint").textContent = hint;
+}
+
+// ------------------------------------------------------------------ 링크 미리 확인 (사이트 · 정리한 주소 · 시작 위치)
+const PLATFORM_SHORT = { youtube: "유튜브", instagram: "인스타", tiktok: "틱톡", facebook: "페이스북", x: "X",
+  soundcloud: "사운드클라우드", vimeo: "비메오", naver: "네이버" };
+const URL_HINT = "음성만 받아 바로 분석합니다. 앱의 ‘공유’ 문구를 통째로 붙여 넣어도 링크만 골라 써요.";
+
+function onUrlInput() {
+  updateStartButton();
+  clearTimeout(state.linkTimer);
+  const text = urlValue();
+  if (!text) { renderLinkHint(null); return; }
+  state.linkTimer = setTimeout(() => checkLink(text), 250);
+}
+
+async function checkLink(text) {
+  const request = ++state.linkRequest;
+  let info;
+  try {
+    info = await api(`/api/link?text=${encodeURIComponent(text)}`);
+  } catch (_) {
+    return;  // 미리 확인은 안내일 뿐 — 실패해도 시작은 할 수 있다
+  }
+  if (request !== state.linkRequest || urlValue() !== text) return;
+  state.link = Object.assign({ text }, info);
+  renderLinkHint(state.link);
+  updateStartButton();
+}
+
+function renderLinkHint(info) {
+  const box = $("#url-hint");
+  box.classList.remove("error");
+  box.replaceChildren();
+  const line = (text, cls) => {
+    const p = document.createElement("div");
+    if (cls) p.className = cls;
+    p.textContent = text;
+    box.appendChild(p);
+    return p;
+  };
+  if (!info) { box.textContent = URL_HINT; return; }
+  if (!info.url) {
+    box.classList.add("error");
+    line("링크를 찾지 못했어요. https:// 로 시작하는 주소를 넣어 주세요.");
+    return;
+  }
+  if (info.problem) {
+    box.classList.add("error");
+    line(info.problem);
+    return;
+  }
+  const kept = $("#keep-video").checked ? "영상과 음성을" : "음성만";
+  line(`${info.label} · ${kept} 받아 바로 분석합니다.`, "url-site");
+  if (info.changed) line(info.url, "url-clean mono");
+  if (info.login && !cookieBrowser() && !(state.info && state.info.default_cookies)) {
+    line("로그인해야 보이는 게시물이면 받기 옵션의 ‘로그인 정보’를 고르세요. 안 되면 탭에서 틀어 두고 ‘이 컴퓨터 소리 듣기’로 들려주세요.", "url-note");
+  }
+  if (info.start) {
+    const p = line(`링크에 ${fmtTime(info.start)} 시작 위치가 들어 있어요. `, "url-note");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "link-btn";
+    b.textContent = `${fmtTime(info.start)}부터 분석하기`;
+    b.addEventListener("click", () => {
+      $("#start").value = String(Math.round(info.start));
+      $("#analysis-options").open = true;
+      b.textContent = "분석 옵션의 시작(초)에 넣었어요";
+      b.disabled = true;
+    });
+    p.appendChild(b);
+  }
+}
+
+async function pasteUrl() {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text) return;
+    $("#url").value = text.trim();
+    if (state.file) setFile(null);
+    onUrlInput();
+    $("#url").focus();
+  } catch (_) {
+    $("#url").focus();  // 권한이 없으면 직접 붙여 넣게
+  }
+}
+
+// ------------------------------------------------------------------ 로그인 정보 (브라우저 쿠키)
+const BROWSER_NAMES = { chrome: "Chrome", edge: "Edge", safari: "Safari", firefox: "Firefox", whale: "웨일",
+  brave: "Brave", opera: "Opera", vivaldi: "Vivaldi", chromium: "Chromium" };
+
+function cookieBrowser() {
+  return ($("#cookie-browser").value || "").trim();
+}
+
+function storeGet(key) {
+  try { return window.localStorage ? window.localStorage.getItem(key) : null; } catch (_) { return null; }
+}
+
+function storeSet(key, value) {
+  try { if (window.localStorage) window.localStorage.setItem(key, value); } catch (_) { /* 저장 못 해도 동작 */ }
+}
+
+function fillCookieSelects() {
+  const browsers = (state.info && state.info.cookie_browsers) || [];
+  const none = state.info && state.info.default_cookies ? "기본 설정 (BAND2SHEET_COOKIES…)" : "사용 안 함";
+  const saved = storeGet("band2sheet.cookieBrowser") || "";
+  const local = !state.info || state.info.local !== false;
+  for (const sel of [$("#cookie-browser"), $("#p-cookie-browser")]) {
+    sel.innerHTML = "";
+    sel.add(new Option(local ? none : "이 컴퓨터에서 연 화면에서만 쓸 수 있어요", ""));
+    if (local) for (const b of browsers) sel.add(new Option(BROWSER_NAMES[b] || b, b));
+    sel.value = local && browsers.includes(saved) ? saved : "";
+    sel.disabled = !local;
+  }
+}
+
+function setCookieBrowser(value) {
+  $("#cookie-browser").value = value;
+  $("#p-cookie-browser").value = value;
+  storeSet("band2sheet.cookieBrowser", value);
+  if (state.link) renderLinkHint(state.link);
+}
+
+// ------------------------------------------------------------------ 들려주기: 마이크 녹음 · 이 컴퓨터(탭) 소리
+const REC_MAX_SEC = 10 * 60;
+const REC_TYPES = [["audio/webm;codecs=opus", "webm"], ["audio/mp4", "m4a"], ["audio/ogg;codecs=opus", "ogg"], ["audio/webm", "webm"]];
+// 음악을 녹음할 때는 통화용 처리(에코 제거·잡음 제거·자동 음량)가 음정과 어택을 뭉갠다
+const MUSIC_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+
+function canRecord(kind) {
+  const md = typeof navigator !== "undefined" && navigator.mediaDevices;
+  if (typeof MediaRecorder === "undefined" || !md) return false;
+  return kind === "tab" ? typeof md.getDisplayMedia === "function" : typeof md.getUserMedia === "function";
+}
+
+function showListen(mode) {
+  $("#listen-idle").classList.toggle("hidden", mode !== "idle");
+  $("#listen-live").classList.toggle("hidden", mode !== "live");
+  $("#listen-done").classList.toggle("hidden", mode !== "done");
+  $("#listen-card").classList.toggle("recording", mode === "live");
+}
+
+function initListen() {
+  const secure = typeof window.isSecureContext === "boolean" ? window.isSecureContext : true;
+  const mic = canRecord("mic");
+  const tab = canRecord("tab");
+  $("#rec-mic").disabled = !mic;
+  $("#rec-tab").disabled = !tab;
+  if (!tab) $("#rec-tab").title = "이 브라우저는 화면·탭 소리 공유를 지원하지 않아요 (컴퓨터의 Chrome·Edge 에서 됩니다)";
+  if (!mic || !tab) {
+    $("#listen-hint").textContent = !secure ?
+      "마이크·컴퓨터 소리는 이 컴퓨터(localhost)나 https 주소로 열었을 때만 쓸 수 있어요. 휴대폰에서는 녹음 앱으로 녹음한 파일을 올려 주세요." :
+      !mic ? "이 브라우저는 녹음을 지원하지 않아요. 녹음 파일을 올려 주세요." :
+      "컴퓨터 소리 듣기는 컴퓨터의 Chrome·Edge 에서 됩니다. 마이크 녹음은 여기서 바로 할 수 있어요.";
+  }
+  $("#rec-mic").addEventListener("click", () => startRecording("mic"));
+  $("#rec-tab").addEventListener("click", () => startRecording("tab"));
+  $("#rec-stop").addEventListener("click", () => stopRecording());
+  $("#rec-again").addEventListener("click", () => startRecording(state.capture || "mic"));
+  $("#rec-discard").addEventListener("click", () => setFile(null));
+}
+
+async function startRecording(kind) {
+  if (state.rec || state.recStarting || !canRecord(kind)) return;
+  $("#listen-error").textContent = "";
+  let stream;
+  state.recStarting = true;  // 권한 창이 떠 있는 동안 두 번 눌러도 녹음은 하나
+  try {
+    if (kind === "tab") {
+      // 화면 공유 창에서 탭(또는 화면)을 고르고 '오디오 공유'를 켜야 소리가 들어온다
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true, audio: MUSIC_AUDIO, systemAudio: "include", selfBrowserSurface: "exclude",
+        surfaceSwitching: "include", preferCurrentTab: false,
+      });
+      if (!stream.getAudioTracks().length) {
+        stream.getTracks().forEach((t) => t.stop());
+        throw new Error("소리가 공유되지 않았어요. 공유 창에서 탭을 고르고 ‘탭 오디오도 공유’를 켜 주세요.");
+      }
+    } else {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: Object.assign({ channelCount: { ideal: 2 } }, MUSIC_AUDIO) });
+    }
+  } catch (e) {
+    const denied = e && (e.name === "NotAllowedError" || e.name === "SecurityError");
+    $("#listen-error").textContent = denied ?
+      (kind === "tab" ? "공유를 취소했거나 권한이 없어요." : "마이크 권한이 필요해요. 주소창의 자물쇠 아이콘에서 마이크를 허용해 주세요.") :
+      e && e.name === "NotFoundError" ? "마이크를 찾지 못했어요. 연결을 확인해 주세요." : (e && e.message) || String(e);
+    return;
+  } finally {
+    state.recStarting = false;
+  }
+  const [mime, ext] = REC_TYPES.find(([t]) => MediaRecorder.isTypeSupported(t)) || ["", "webm"];
+  const audioOnly = new MediaStream(stream.getAudioTracks());
+  let recorder;
+  try {
+    recorder = new MediaRecorder(audioOnly, mime ? { mimeType: mime, audioBitsPerSecond: 256000 } : {});
+  } catch (e) {
+    stream.getTracks().forEach((t) => t.stop());
+    $("#listen-error").textContent = `녹음을 시작하지 못했어요: ${e.message}`;
+    return;
+  }
+  const rec = { kind, stream, recorder, chunks: [], ext, mime: recorder.mimeType || mime, started: Date.now(), clipTimes: [], quiet: 0 };
+  state.rec = rec;
+  recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) rec.chunks.push(ev.data); };
+  recorder.onstop = () => finishRecording(rec);
+  // 사용자가 브라우저의 '공유 중지'를 누르거나 마이크가 빠지면 거기까지 녹음
+  stream.getTracks().forEach((t) => t.addEventListener("ended", () => stopRecording()));
+  recorder.start(1000);
+  if (state.file) setFile(null);
+  $("#url").value = "";
+  renderLinkHint(null);
+  $("#rec-what").textContent = kind === "tab" ? "컴퓨터 소리 듣는 중" : "녹음 중";
+  rec.tip = kind === "tab" ?
+    "다른 탭에서 영상을 처음부터 틀어 주세요. 곡이 끝나면 멈추기를 누르세요." :
+    "곡이 끝나면 멈추기를 누르세요. 앞뒤의 빈 소리는 자동으로 잘라요.";
+  $("#rec-tip").textContent = rec.tip;
+  showListen("live");
+  startMeter(rec);
+  updateStartButton();
+}
+
+function startMeter(rec) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  try {
+    rec.ctx = new AC();
+    const src = rec.ctx.createMediaStreamSource(new MediaStream(rec.stream.getAudioTracks()));
+    rec.analyser = rec.ctx.createAnalyser();
+    rec.analyser.fftSize = 2048;
+    src.connect(rec.analyser);  // 스피커로는 내보내지 않음 (되울림 방지)
+    if (rec.ctx.state === "suspended") rec.ctx.resume().catch(() => {});
+  } catch (_) {
+    rec.analyser = null;
+  }
+  const buf = new Float32Array(2048);
+  const tick = () => {
+    if (state.rec !== rec) return;
+    const sec = (Date.now() - rec.started) / 1000;
+    $("#rec-time").textContent = fmtTime(sec);
+    if (sec >= REC_MAX_SEC) { stopRecording(); return; }
+    if (rec.analyser) {
+      rec.analyser.getFloatTimeDomainData(buf);
+      let peak = 0, sum = 0;
+      for (const v of buf) { const a = Math.abs(v); if (a > peak) peak = a; sum += v * v; }
+      const db = 20 * Math.log10(Math.sqrt(sum / buf.length) + 1e-9);
+      $("#rec-level").style.width = `${Math.max(0, Math.min(100, (db + 60) / 60 * 100)).toFixed(0)}%`;
+      const now = Date.now();
+      if (peak >= 0.99) rec.clipTimes.push(now);
+      rec.clipTimes = rec.clipTimes.filter((t) => now - t < 2000);  // 최근 2초
+      rec.quiet = db < -50 ? rec.quiet + 1 : 0;
+      const clipping = rec.clipTimes.length >= 3;
+      $("#listen-card").classList.toggle("clipping", clipping);
+      const tip = clipping ? "소리가 너무 커서 찢어져요. 조금 멀리서 하거나 입력 음량을 줄여 주세요." :
+        rec.quiet > 180 ? (rec.kind === "tab" ?
+          "소리가 들어오지 않아요. 고른 탭에서 영상이 재생 중인지, ‘탭 오디오 공유’를 켰는지 확인하세요." :
+          "소리가 거의 안 들려요. 마이크 가까이에서 해 주세요.") : rec.tip;
+      if ($("#rec-tip").textContent !== tip) $("#rec-tip").textContent = tip;
+    }
+    rec.raf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function stopRecording() {
+  const rec = state.rec;
+  if (!rec || rec.stopping) return;
+  rec.stopping = true;
+  if (rec.recorder.state !== "inactive") rec.recorder.stop();
+  else finishRecording(rec);
+}
+
+function finishRecording(rec) {
+  if (state.rec !== rec) return;
+  state.rec = null;
+  cancelAnimationFrame(rec.raf);
+  rec.stream.getTracks().forEach((t) => t.stop());
+  if (rec.ctx) rec.ctx.close().catch(() => {});
+  $("#listen-card").classList.remove("clipping");
+  const sec = (Date.now() - rec.started) / 1000;
+  if (!rec.chunks.length || sec < 2) {
+    showListen("idle");
+    $("#listen-error").textContent = "녹음이 너무 짧아요. 2초 넘게 들려주세요.";
+    updateStartButton();
+    return;
+  }
+  const blob = new Blob(rec.chunks, { type: rec.mime || "audio/webm" });
+  const d = new Date(rec.started);
+  const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}-${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+  const file = new File([blob], `${rec.kind === "tab" ? "computer" : "recording"}-${stamp}.${rec.ext}`, { type: blob.type });
+  file.recordedTitle = `${rec.kind === "tab" ? "컴퓨터 소리" : "녹음"} ${d.getMonth() + 1}월 ${d.getDate()}일 ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  setFile(file, rec.kind);
+  state.recUrl = URL.createObjectURL(blob);
+  $("#rec-audio").src = state.recUrl;
+  $("#rec-name").textContent = file.recordedTitle;
+  $("#rec-len").textContent = `${fmtTime(sec)} · ${(blob.size / 1048576).toFixed(1)} MB`;
+  $("#rec-again").textContent = rec.kind === "tab" ? "다시 듣기" : "다시 녹음";
+  showListen("done");
   updateStartButton();
 }
 
 function initNewView() {
   const drop = $("#drop");
-  $("#file").addEventListener("change", (e) => setFile(e.target.files[0]));
+  $("#file").addEventListener("change", (e) => { if (!state.rec) setFile(e.target.files[0]); });
   drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
   drop.addEventListener("dragleave", () => drop.classList.remove("over"));
   drop.addEventListener("drop", (e) => {
     e.preventDefault();
     drop.classList.remove("over");
-    if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files.length && !state.rec) setFile(e.dataTransfer.files[0]);
+    else if (!e.dataTransfer.files.length) {  // 브라우저 주소창·메신저에서 링크를 끌어다 놓은 경우
+      const text = e.dataTransfer.getData("text/uri-list") || e.dataTransfer.getData("text/plain");
+      if (text && /https?:\/\//i.test(text)) { $("#url").value = text.trim(); onUrlInput(); }
+    }
   });
+  $$("#source-kind button").forEach((b) => b.addEventListener("click", () => {
+    if (!b.disabled) setSourceKind(b.dataset.v);
+  }));
+  setSourceKind(state.sourceKind);
+  if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.readText) {
+    $("#url-paste").classList.remove("hidden");
+    $("#url-paste").addEventListener("click", pasteUrl);
+  }
+  for (const sel of ["#cookie-browser", "#p-cookie-browser"]) {
+    $(sel).addEventListener("change", (e) => setCookieBrowser(e.target.value));
+  }
+  initListen();
   $$("#quality button").forEach((b) => {
     b.setAttribute("aria-pressed", String(b.dataset.v === state.quality));
     b.addEventListener("click", () => {
@@ -216,23 +590,29 @@ function initNewView() {
       state.quality = b.dataset.v;
     });
   });
-  $("#url").addEventListener("input", updateStartButton);
+  $("#url").addEventListener("input", onUrlInput);
   $("#url").addEventListener("keydown", (e) => { if (e.key === "Enter" && urlValue()) startJob(); });
   $("#fetch-only").addEventListener("change", updateStartButton);
-  $("#keep-video").addEventListener("change", updateStartButton);
+  $("#keep-video").addEventListener("change", () => {
+    updateStartButton();
+    if (state.link) renderLinkHint(state.link);
+  });
   $("#btn-start").addEventListener("click", startJob);
   $("#c-make").addEventListener("click", makeSongs);
   $("#c-add").addEventListener("click", addManualSong);
 }
 
 async function startJob() {
-  if (state.startingJob || !(urlValue() || state.file)) return;
+  if (state.startingJob || state.rec || !(urlValue() || state.file)) return;
   state.startingJob = true;
   const context = jobContext();
   const file = state.file;
+  const capture = urlValue() ? null : state.capture;
   $("#start-error").textContent = "";
   const options = {
-    title: $("#title").value.trim(),
+    title: $("#title").value.trim() || (capture && file && file.recordedTitle) || "",
+    source_kind: state.sourceKind,
+    capture,
     quality: state.quality,
     split_vocals: $("#split-vocals").checked,
     split_drums: $("#split-drums").checked,
@@ -259,12 +639,17 @@ async function startJob() {
         keep_video: $("#keep-video").checked,
         max_height: Number($("#max-height").value),
         audio_format: $("#audio-format").value,
+        cookies_from_browser: cookieBrowser(),
       });
       job = await api("/api/jobs/url", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url, options }),
       });
-      if (isCurrentJob(context) && urlValue() === url) $("#url").value = "";
+      if (isCurrentJob(context) && urlValue() === url) {
+        $("#url").value = "";
+        state.link = null;
+        renderLinkHint(null);
+      }
     } else {
       const fd = new FormData();
       fd.append("file", file);
@@ -617,7 +1002,8 @@ function showSource() {
 function updateAnalysisButtons() {
   const pending = state.analysisJobs.has(state.jobId);
   const canAnalyze = state.job && state.job.id === state.jobId && ["ready", "error"].includes(state.job.status);
-  for (const [selector, label] of [["#s-analyze", "악보 만들기 시작"], ["#p-retry", "분석 다시 시도"]]) {
+  const refetch = state.job && state.job.url && !state.job.source;  // 링크에서 받지도 못한 작업
+  for (const [selector, label] of [["#s-analyze", "악보 만들기 시작"], ["#p-retry", refetch ? "다시 받기" : "분석 다시 시도"]]) {
     const button = $(selector);
     button.disabled = pending || !canAnalyze;
     button.textContent = pending ? "시작하는 중…" : label;
@@ -698,7 +1084,10 @@ function initSourceView() {
     start: Number($("#s-start").value) || null,
     duration: Number($("#s-duration").value) || null,
   }, $("#s-error")));
-  $("#p-retry").addEventListener("click", () => startAnalysis({}, $("#p-error")));
+  // 링크 작업은 다시 받을 때 고른 로그인 정보를 함께 보낸다 (로그인이 필요해서 실패한 경우)
+  $("#p-retry").addEventListener("click", () => startAnalysis(
+    state.job && state.job.url && !state.job.source ? { cookies_from_browser: $("#p-cookie-browser").value || "" } : {},
+    $("#p-error")));
   $("#p-refresh").addEventListener("click", refreshJob);
   $("#p-new").addEventListener("click", newJob);
   $("#s-delete").addEventListener("click", () => deleteJob("받은 파일을 지울까요?", $("#s-error")));
@@ -783,7 +1172,8 @@ function jobKind(j) {
   if (j.kind === "remix") return { id: "remix", label: "후보정" };
   if (j.status === "choose" || j.songs) return { id: "split", label: "곡 나누기" };
   if (j.parent) return { id: "song", label: "실황 한 곡" };
-  if (j.url) return { id: "link", label: "링크" };
+  if (j.url) return { id: "link", label: PLATFORM_SHORT[j.platform] || "링크" };
+  if (j.capture) return { id: "capture", label: j.capture === "tab" ? "컴퓨터 소리" : "녹음" };
   return { id: "score", label: "악보" };
 }
 
@@ -879,6 +1269,8 @@ async function refreshJob() {
   $("#p-log").scrollTop = 1e9;
   $("#p-error").textContent = job.error || "";
   $("#p-retry").classList.toggle("hidden", job.status !== "error");
+  // 링크에서 받지 못한 작업: 로그인 정보를 골라 바로 다시 받을 수 있게
+  $("#p-cookie-row").classList.toggle("hidden", !(job.status === "error" && job.url && !job.source));
   if (job.status === "running" || job.status === "queued") {
     state.pollTimer = setTimeout(() => {
       if (current()) { refreshJob(); loadJobs(); }
@@ -1635,6 +2027,9 @@ function buildMixer() {
   master.addEventListener("timeupdate", onTime);
   master.addEventListener("ended", () => { $("#m-play").textContent = "재생"; });
   $("#preset-score").classList.toggle("hidden", !state.audios.score);
+  // 노래·허밍처럼 목소리만 있는 작업에는 '반주'가 없다
+  const mrBtn = $('#mix-preset button[data-p="mr"]');
+  if (mrBtn) mrBtn.classList.toggle("hidden", !hasAccompaniment());
   setPreset("all");
   applyMix();
   updateDownloads();
@@ -1805,10 +2200,16 @@ function updateDownloads() {
   const base = `/api/jobs/${state.job.id}/mr?semitones=${semis}`;
   $("#dl-mr").href = `${base}&kind=mr`;
   $("#dl-inst").href = `${base}&kind=inst`;
-  $("#dl-mr").classList.toggle("hidden", !stems.includes("vocals"));
+  const mr = stems.includes("vocals") && hasAccompaniment();
+  $("#dl-mr").classList.toggle("hidden", !mr);
   $("#dl-inst").classList.toggle("hidden", !stems.includes("backing_vocals"));
-  $(".dl-sep").classList.toggle("hidden", !(stems.includes("vocals") && stems.includes("backing_vocals")));
-  $(".mr-dl").classList.toggle("hidden", !stems.includes("vocals"));
+  $(".dl-sep").classList.toggle("hidden", !(mr && stems.includes("backing_vocals")));
+  $(".mr-dl").classList.toggle("hidden", !mr);
+}
+
+function hasAccompaniment() {
+  const stems = (state.result && state.result.stems) || [];
+  return stems.some((s) => !["vocals", "backing_vocals", "mix", "mr", "inst", "score"].includes(s));
 }
 
 function onTime() {

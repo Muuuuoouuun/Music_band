@@ -36,15 +36,16 @@
       </div>
       <div id="mode-score">
       <div class="new-heading"><span class="eyebrow">새 작업</span><h1>연주를, 읽을 수 있는 악보로.</h1>
-      <p class="muted">링크 또는 음원을 추가하세요. 악기별 악보, TAB, 코드표를 한 작업실에서 확인하고 다듬습니다.</p></div>
+      <p class="muted">링크를 넣거나, 들려주거나, 파일을 올리세요. 악기별 악보, TAB, 코드표를 한 작업실에서 확인하고 다듬습니다.</p></div>
       <div class="source-inputs">
 
-      <div class="card url-card">
-        <label class="input-heading" for="url">영상 링크</label>
-        <input id="url" type="url" inputmode="url" autocomplete="off"
-               placeholder="YouTube 링크 붙여넣기" aria-describedby="url-hint">
-        <p id="url-hint" class="muted small">음성을 받아 바로 분석합니다. 영상 보관과 구간 선택은 받기 옵션에서 설정하세요.</p>
-        <details class="url-more">
+      <div class="card url-card" id="url-card">
+        <div class="input-head"><label class="input-heading" for="url">영상 링크</label>
+          <button id="url-paste" type="button" class="ghost small-btn hidden">붙여넣기</button></div>
+        <input id="url" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+               placeholder="YouTube · 인스타그램 릴스 · 틱톡 링크" aria-describedby="url-hint">
+        <div id="url-hint" class="url-hint muted small" aria-live="polite">음성만 받아 바로 분석합니다. 앱의 ‘공유’ 문구를 통째로 붙여 넣어도 링크만 골라 써요.</div>
+        <details class="url-more" id="url-more">
           <summary>받기 옵션</summary>
           <label class="check"><input type="checkbox" id="keep-video"> 영상도 받기 (앱에서 보면서 구간 고르기·영상 저장)</label>
           <label class="check"><input type="checkbox" id="fetch-only"> 받기 · 음성 추출까지만 (구간을 정한 뒤 악보 만들기)</label>
@@ -56,9 +57,34 @@
               <option value="mp3" selected>MP3</option><option value="wav">WAV (무손실)</option>
               <option value="m4a">M4A</option><option value="flac">FLAC (무손실)</option></select></label>
           </div>
+          <label>로그인 정보 (인스타그램·연령 제한 영상처럼 로그인해야 보이는 링크)<select id="cookie-browser" class="cookie-browser"></select></label>
+          <p class="muted small">이 컴퓨터의 브라우저에 로그인해 둔 정보로 받습니다. 그 사이트에 접속할 때만 쓰고 따로 저장하지 않아요.</p>
         </details>
       </div>
 
+      <div class="card listen-card" id="listen-card">
+        <div class="input-heading">들려주기</div>
+        <div id="listen-idle" class="listen-idle">
+          <div class="listen-buttons">
+            <button id="rec-mic" type="button" class="listen-btn"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5 11a7 7 0 0 0 14 0M12 18v3"/></svg><span>마이크로 녹음<small>노래·허밍·악기 연주</small></span></button>
+            <button id="rec-tab" type="button" class="listen-btn"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v11H3zM8 20h8M12 16v4"/></svg><span>이 컴퓨터 소리 듣기<small>다른 탭의 릴스·영상</small></span></button>
+          </div>
+          <p id="listen-hint" class="muted small">로그인 때문에 링크로 못 받는 영상도, 다른 탭에서 틀어 두고 소리만 들려주면 채보할 수 있어요.</p>
+        </div>
+        <div id="listen-live" class="listen-live hidden" role="group" aria-label="녹음 중">
+          <div class="rec-row"><span class="rec-dot" aria-hidden="true"></span><b id="rec-what">녹음 중</b>
+            <span id="rec-time" class="rec-time" role="timer" title="최대 10분">0:00</span>
+            <button id="rec-stop" type="button" class="primary">멈추기</button></div>
+          <div class="meter" aria-hidden="true"><div id="rec-level"></div><span class="meter-clip"></span></div>
+          <p id="rec-tip" class="muted small" aria-live="polite">곡이 끝나면 멈추기를 누르세요. 앞뒤의 빈 소리는 자동으로 잘라요.</p>
+        </div>
+        <div id="listen-done" class="listen-done hidden">
+          <div class="rec-row"><b id="rec-name">녹음</b><span id="rec-len" class="muted small"></span></div>
+          <audio id="rec-audio" controls preload="metadata"></audio>
+          <div class="rec-row"><button id="rec-again" type="button">다시 녹음</button><button id="rec-discard" type="button" class="ghost">지우기</button></div>
+        </div>
+        <p id="listen-error" class="error small" role="alert"></p>
+      </div>
 
       <label id="drop" class="drop">
         <input id="file" class="file-input" type="file" aria-label="오디오·영상 또는 스템 ZIP 파일 선택" aria-describedby="file-help">
@@ -68,6 +94,16 @@
         <span class="sr-only" id="ext-hint">mp3, wav, m4a, mp4, mov ...</span>
         <div id="file-name" class="file-name"></div>
       </label>
+      </div>
+      <div class="kind-row">
+        <span class="kind-label" id="kind-label">소리 구성</span>
+        <div class="seg kind-seg" id="source-kind" role="group" aria-labelledby="kind-label">
+          <button type="button" data-v="auto" class="on" aria-pressed="true">여러 악기<small>밴드·찬양팀 (악기별 분리)</small></button>
+          <button type="button" data-v="voice" aria-pressed="false">노래·허밍<small>목소리 하나 → 멜로디 + 코드</small></button>
+          <button type="button" data-v="piano" aria-pressed="false">피아노<small>건반 하나</small></button>
+          <button type="button" data-v="guitar" aria-pressed="false">기타<small>기타 하나 (TAB)</small></button>
+        </div>
+        <p id="kind-hint" class="muted small"></p>
       </div>
       <div class="start-actions"><button id="btn-start" class="primary big" disabled>악보 만들기 시작</button><span class="muted small">원본 파일은 그대로 보관됩니다.</span></div>
       <p id="start-error" class="error" role="alert"></p>
@@ -289,6 +325,7 @@
         <p id="p-stage" class="stage" role="status" aria-live="polite"></p>
         <div class="progress"><div id="p-bar" role="progressbar" aria-label="분석 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div></div>
         <p id="p-error" class="error" role="alert"></p>
+        <label id="p-cookie-row" class="p-cookie-row hidden">다시 받을 때 쓸 로그인 정보<select id="p-cookie-browser" class="cookie-browser"></select></label>
         <div class="progress-actions">
           <button id="p-retry" class="primary hidden">다시 시도</button>
           <button id="p-refresh" class="primary hidden">상태 다시 확인</button>

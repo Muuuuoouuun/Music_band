@@ -4,7 +4,7 @@
 
 | 앱 | 하는 일 | 코드와 설명 | 로컬 주소 |
 |---|---|---|---|
-| **band2sheet · 악보 스튜디오** | 영상·음원·링크를 악기별 악보로 변환하고 코드·가사·음표 편집 | [apps/band2sheet](apps/band2sheet/README.md) | `http://127.0.0.1:8765` |
+| **band2sheet · 악보 스튜디오** | 링크(유튜브·인스타그램 릴스 …)·들려주기(마이크·컴퓨터 소리)·영상·음원을 악기별 악보로 변환하고 코드·가사·음표 편집 | [apps/band2sheet](apps/band2sheet/README.md) | `http://127.0.0.1:8765` |
 | **AirChoir · 허밍 합창단** | 목소리 화음, 손동작 지휘, 녹음한 오브 반복 재생 (Phase 2) | [apps/airchoir](apps/airchoir/README.md) · [계획](apps/airchoir/PLAN.md) | `http://localhost:8000` |
 
 ## band2sheet 시작

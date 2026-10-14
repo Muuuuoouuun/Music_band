@@ -50,6 +50,12 @@ test("job kinds and relative times read naturally and never throw on missing dat
   assert.equal(jobKind({ status: "done", parent: "abc", songs: 0 }).label, "실황 한 곡");
   assert.equal(jobKind({ status: "done", url: "https://example.invalid/v", songs: 0 }).label, "링크");
   assert.equal(jobKind({ status: "done", songs: 0 }).label, "악보");
+  // 링크는 사이트 이름으로, 들려주기 녹음은 녹음 방식으로
+  assert.equal(jobKind({ status: "done", url: "https://www.instagram.com/reel/x/", platform: "instagram", songs: 0 }).label, "인스타");
+  assert.equal(jobKind({ status: "done", url: "https://youtu.be/x", platform: "youtube", songs: 0 }).label, "유튜브");
+  assert.equal(jobKind({ status: "done", url: "https://a.invalid/x", platform: "other", songs: 0 }).label, "링크");
+  assert.deepEqual({ ...jobKind({ status: "done", capture: "mic", songs: 0 }) }, { id: "capture", label: "녹음" });
+  assert.equal(jobKind({ status: "done", capture: "tab", songs: 0 }).label, "컴퓨터 소리");
   const sec = now / 1000;
   assert.equal(timeAgo(sec - 5), "방금");
   assert.equal(timeAgo(sec - 5 * 60), "5분 전");

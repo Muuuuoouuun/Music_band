@@ -40,6 +40,9 @@ INSTRUMENTS: dict[str, InstrumentSpec] = {
 # 악보(총보)에 표시할 순서
 SCORE_ORDER = ["vocals", "backing_vocals", "guitar", "piano", "other", "bass", "drums"]
 
+# 한 악기(목소리)만 든 소리: 앱·CLI 의 '소리 구성' 선택지 -> 분리 없이 채보할 스템
+SOLO_KINDS = {"voice": "vocals", "piano": "piano", "guitar": "guitar"}
+
 # ---------------------------------------------------------------------------
 # 드럼 키트 (GM 드럼 번호)
 # ---------------------------------------------------------------------------

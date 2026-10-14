@@ -337,6 +337,39 @@ test("Enter and button submissions cannot create duplicate URL jobs while pendin
   assert.equal(h.node("#btn-start").disabled, false);
 });
 
+test("link jobs send the sound kind and the chosen browser login with the pasted text", async () => {
+  const h = harness();
+  h.node("#url").value = "보세요 https://www.instagram.com/reel/abc/?igsh=x";
+  h.node("#cookie-browser").value = "whale";
+  h.state.sourceKind = "voice";
+  const creation = h.startJob();
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.requests[0].url, "/api/jobs/url");
+  const body = JSON.parse(h.requests[0].options.body);
+  assert.equal(body.url, "보세요 https://www.instagram.com/reel/abc/?igsh=x");
+  assert.equal(body.options.source_kind, "voice");
+  assert.equal(body.options.cookies_from_browser, "whale");
+  assert.equal(body.options.capture, null);
+  h.requests[0].reject(new Error("unavailable"));
+  await creation;
+  assert.equal(h.node("#start-error").textContent, "unavailable");
+});
+
+test("starting is blocked while a recording is still running", async () => {
+  const h = harness();
+  h.state.rec = { kind: "mic" };
+  h.state.file = { name: "recording.webm", size: 10 };
+  h.updateStartButton();
+  assert.equal(h.node("#btn-start").disabled, true);
+  await h.startJob();
+  assert.equal(h.requests.length, 0);
+  h.state.rec = null;
+  h.state.capture = "mic";
+  h.updateStartButton();
+  assert.equal(h.node("#btn-start").disabled, false);
+  assert.equal(h.node("#btn-start").textContent, "녹음으로 악보 만들기");
+});
+
 test("an earlier job creation cannot clear input or change selection after navigation", async () => {
   const h = harness();
   h.node("#url").value = "https://example.invalid/old";
