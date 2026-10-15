@@ -106,6 +106,9 @@ def pyin_f0(y: np.ndarray, sr: int, hop: int, spec: InstrumentSpec) -> np.ndarra
     return librosa.hz_to_midi(np.where(voiced, f0, np.nan))
 
 
+CREPE_MIN_COVERAGE = 0.4  # 소리 나는 프레임 중 이보다 적게 음높이를 잡으면 CREPE 를 믿지 않는다
+
+
 def crepe_f0(y: np.ndarray, sr: int, hop: int, spec: InstrumentSpec, device: str | None = None,
              threshold: float = 0.5) -> np.ndarray:
     """CREPE (torchcrepe). GPU 가 있으면 full 모델, 없으면 tiny 모델."""
@@ -267,6 +270,13 @@ def mono_notes(path: Path, spec: InstrumentSpec, engine: str, device: str | None
         if not np.any(y):
             return []
         midi = crepe_f0(y, sr, hop, spec, device)
+        # CPU 의 tiny 모델은 낮은 음(실제 베이스)에서 음높이를 거의 못 잡는다: 실제 곡 베이스에서
+        # 소리 나는 프레임의 24%만 잡아 음표 24개(pYIN 210개). 이럴 때는 pYIN 으로 바꾼다.
+        rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop)[0][:len(midi)]
+        loud = rms > np.percentile(rms[rms > 0], 95) * 0.08 if np.any(rms > 0) else rms > 0
+        covered = float(np.mean(~np.isnan(midi[:len(rms)][loud]))) if np.any(loud) else 1.0
+        if covered < CREPE_MIN_COVERAGE:
+            raise RuntimeError(f"소리 나는 구간의 {covered * 100:.0f}%만 음높이를 잡음")
     else:
         sr, hop = 22050, 256
         y, _ = librosa.load(str(path), sr=sr, mono=True)

@@ -54,7 +54,7 @@ class AnalyzeOptions:
 def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
             log: Log = _print, progress: Progress | None = None) -> Project:
     """무거운 단계 전부 실행 후 project.json 저장."""
-    from .separate import QUALITY, Stems, load_stems_dir, separate, separate_detailed, stem_level_db
+    from .separate import QUALITY, Stems, load_stems_dir, separate, separate_detailed, stem_peak_level_db
     from .transcribe import MissingEngine, transcribe_stem
 
     opts = opts or AnalyzeOptions()
@@ -102,7 +102,15 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
     wanted = opts.stems or list(stem_paths)
     if "vocals" in wanted and "backing_vocals" in stem_paths and opts.stems:
         wanted = wanted + ["backing_vocals"]
-    mix_audio, _ = sf.read(str(mix_path), always_2d=True)
+    mix_audio, mix_sr = sf.read(str(mix_path), always_2d=True)
+    levels: dict[str, float] = {}
+
+    def level_of(name: str) -> float:
+        """스템이 가장 클 때의 믹스 대비 크기 (dB)."""
+        if name not in levels:
+            audio, _ = sf.read(str(stem_paths[name]), always_2d=True)
+            levels[name] = stem_peak_level_db(audio, mix_audio, mix_sr)
+        return levels[name]
 
     # 분리 결과 분석: 악기별 활동 구간, 블리딩 정도
     analyzer = None
@@ -115,6 +123,11 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
         for name in stem_paths:
             separation[name] = analyzer.analyze(name).report()
             r = separation[name]
+            if level_of(name) < opts.min_stem_db:
+                # 활동 구간은 스템 안의 상대 크기로 재므로, 거의 무음인 스템도 '연주 중'으로 나온다
+                r.update(active_ratio=0.0, silent=True)
+                log(f"   - {name}: 소리가 거의 없음 (믹스 대비 {level_of(name):.0f} dB)")
+                continue
             bleed = f", 블리딩 {r['bleed_db']:.0f} dB" if r["bleed_db"] is not None else ""
             log(f"   - {name}: 연주 구간 {r['active_ratio'] * 100:.0f}%{bleed}")
 
@@ -124,16 +137,16 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
     todo = [s for s in order if s in wanted]
     missing: list[MissingEngine] = []
     for i, name in enumerate(todo):
-        if analyzer is not None and not opts.stems:
-            if separation[name]["active_ratio"] < 0.02:
-                log(f"   - {name}: 연주하는 구간이 없어 건너뜀")
-                continue
-        else:
-            audio, _ = sf.read(str(stem_paths[name]), always_2d=True)
-            n = min(len(audio), len(mix_audio))
-            level = stem_level_db(audio[:n], mix_audio[:n]) if n else -99.0
-            if level < opts.min_stem_db and not opts.stems:
+        if not opts.stems:
+            # 소리 크기는 블리딩 정리와 상관없이 먼저 본다: 활동 구간 분석은 스템 안에서의 상대적인
+            # 크기로 판단해, 실제 곡의 비어 있는 피아노 스템(믹스 대비 -65 dB)을 '100% 연주'로 보고
+            # 잡음에서 가짜 음표 364개를 만들었다.
+            level = level_of(name)
+            if level < opts.min_stem_db:
                 log(f"   - {name}: 소리가 거의 없어 건너뜀 ({level:.1f} dB)")
+                continue
+            if analyzer is not None and separation[name]["active_ratio"] < 0.02:
+                log(f"   - {name}: 연주하는 구간이 없어 건너뜀")
                 continue
         spec = spec_for(name)
         engine = opts.vocal_engine if name == "vocals" and opts.vocal_engine else None
@@ -674,7 +687,10 @@ def export_pdf_verovio(xml: Path, pdf: Path) -> Path | None:
     except ImportError:
         return None
     try:
-        tk = verovio.toolkit()
+        # 글꼴 자료 위치를 직접 알려 준다: 기본값은 처음 만든 스레드에서만 찾아져서, 앱(작업 스레드와
+        # 'PDF 저장' 요청 스레드가 다름)에서 다른 스레드가 만들면 글꼴을 못 불러 PDF 가 빠졌다.
+        tk = verovio.toolkit(False)
+        tk.setResourcePath(str(Path(verovio.__file__).parent / "data"))
         # A4 세로, 보기 좋은 크기
         tk.setOptions({"pageWidth": 2100, "pageHeight": 2970, "pageMarginLeft": 80,
                        "pageMarginRight": 80, "pageMarginTop": 60, "pageMarginBottom": 60,

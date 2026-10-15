@@ -198,13 +198,27 @@ def separate(mix_path: Path, out_dir: Path, model_name: str = "htdemucs_6s",
 # audio-separator (UVR 계열 모델)
 # ---------------------------------------------------------------------------
 
+def separator_overlap(device: str | None = None) -> int | None:
+    """RoFormer·MDX23C 모델의 겹쳐 예측하는 창 수. None 이면 모델 기본값(대개 8).
+
+    겹침 8 은 같은 소리를 8번 예측해 평균 내므로 CPU 에서는 아주 느리다(실제 2분 곡의 코러스
+    분리가 20분 넘게 걸림). CPU 에서는 2(창 절반씩 겹침)로 줄인다. BAND2SHEET_SEP_OVERLAP 로 바꿀 수 있다.
+    """
+    env = os.environ.get("BAND2SHEET_SEP_OVERLAP", "").strip()
+    if env:
+        return int(env) if int(env) > 0 else None
+    return 2 if torch_device(device) == "cpu" else None
+
+
 def run_separator(model_filename: str, input_path: Path, out_dir: Path) -> dict[str, Path]:
     """audio-separator 로 분리. 반환: {스템 이름(소문자): 경로}."""
     from audio_separator.separator import Separator
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    mdxc = {"segment_size": 256, "override_model_segment_size": False, "batch_size": None,
+            "overlap": separator_overlap(), "pitch_shift": 0}
     sep = Separator(output_dir=str(out_dir), model_file_dir=str(model_dir()),
-                    log_level=logging.WARNING)
+                    log_level=logging.WARNING, mdxc_params=mdxc)
     sep.load_model(model_filename=model_filename)
     files = sep.separate(str(input_path))
     result: dict[str, Path] = {}
@@ -238,6 +252,10 @@ def separate_detailed(mix_path: Path, out_dir: Path, quality: str = "standard",
     demucs_model, use_roformer = QUALITY.get(quality, QUALITY["standard"])
     has_sep = available("audio_separator")
     result = Stems()
+    if quality == "fast" and (split_vocals or split_drums):
+        # 메인/코러스·드럼 조각 모델은 CPU 에서 곡 길이의 수 배가 걸린다 (2분 곡의 코러스 분리 약 20분)
+        split_vocals = split_drums = False
+        result.notes.append("빠름: 메인/코러스·드럼 조각 분리 생략")
     work = out_dir / "_work"
 
     source = mix_path
@@ -398,6 +416,21 @@ def _mix_files(paths: list[Path], dst: Path) -> Path:
         mix = mix / peak
     sf.write(str(dst), mix, sr0)
     return dst
+
+
+def stem_peak_level_db(stem: np.ndarray, mix: np.ndarray, sr: int, win: float = 1.0,
+                       q: float = 98.0) -> float:
+    """스템이 가장 클 때의 믹스 대비 크기 (dB): 1초 창마다 잰 값의 q 번째 백분위수.
+
+    곡 전체 평균은 브리지에서만 나오는 악기를 '비었다'고 잘못 보므로, 빈 스템인지 볼 때는
+    이 값을 쓴다 (실제 곡에서 빈 피아노 스템은 어느 창에서도 -50 dB 아래)."""
+    n = min(len(stem), len(mix))
+    hop = max(1, int(sr * win))
+    if n < hop:
+        return stem_level_db(stem[:n], mix[:n]) if n else -99.0
+    vals = [stem_level_db(stem[i:i + hop], mix[i:i + hop]) for i in range(0, n - hop + 1, hop)
+            if np.any(mix[i:i + hop])]
+    return float(np.percentile(vals, q)) if vals else -99.0
 
 
 def stem_level_db(stem: np.ndarray, mix: np.ndarray) -> float:

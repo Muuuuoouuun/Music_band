@@ -11,6 +11,7 @@ const NOTE_NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", 
 const state = {
   info: null,
   file: null,
+  source: "link",  // 새 작업 입력 탭: link | audio | score
   quality: "standard",
   jobId: null,
   jobEpoch: 0,
@@ -142,8 +143,7 @@ function midiName(m) {
 async function loadInfo() {
   state.info = await api("/api/info");
   $("#device-chip").textContent = state.info.device === "cpu" ? "CPU 모드" : `가속: ${state.info.device.toUpperCase()}`;
-  $("#ext-hint").textContent = state.info.extensions.join(", ");
-  $("#file").accept = state.info.extensions.join(",");
+  setSource(state.source);  // 탭별 받는 형식(accept)·안내
   const box = $("#instruments");
   box.innerHTML = "";
   for (const ins of state.info.instruments) {
@@ -171,51 +171,142 @@ async function loadInfo() {
   t.innerHTML = state.info.engines.map((e) => `<tr><td class="${e.installed ? "ok" : "no"}">${e.installed ? "✓ 설치됨" : "· 없음"}</td>
     <td><b>${e.key}</b><br><span class="muted small">${e.note}</span></td><td>${e.role}${e.installed ? "" : `<br><code class="small">pip install ${e.pip}</code>`}</td></tr>`).join("") +
     `<tr><td class="${state.info.musescore ? "ok" : "no"}">${state.info.musescore ? "✓ 설치됨" : "· 없음"}</td><td><b>MuseScore</b></td><td>PDF 악보 만들기</td></tr>`;
+  updateSettingsCount();
 }
 
+// 링크 탭일 때만 링크, 파일 탭일 때만 파일을 쓴다 (탭을 바꿔도 입력은 남겨 둠)
 function urlValue() {
-  return $("#url").value.trim();
+  return state.source === "link" ? $("#url").value.trim() : "";
+}
+
+function fileValue() {
+  return state.source === "link" ? null : state.file;
 }
 
 function updateStartButton() {
   const url = urlValue();
-  $("#btn-start").disabled = state.startingJob || !(url || state.file);
+  const file = fileValue();
+  $("#btn-start").disabled = state.startingJob || !(url || file);
   $("#btn-start").setAttribute("aria-busy", String(state.startingJob));
   const what = $("#keep-video").checked ? "영상" : "음성";
   $("#btn-start").textContent = state.startingJob ? "시작하는 중…" : url && $("#fetch-only").checked ? `${what} 받기 시작` :
     url ? `${what} 받아서 악보 만들기` : "악보 만들기 시작";
   $("#max-height").disabled = !$("#keep-video").checked;
-  $("#title").placeholder = url ? "영상 제목 사용" : state.file ? state.file.name.replace(/\.[^.]+$/, "") : "파일 이름 사용";
-  $("#drop").classList.toggle("dim", !!url);
+  if (!state.settings || state.settings.mode !== "reanalyze") {  // 다시 분석 창이 제목 칸을 빌려 쓰는 동안은 그대로
+    $("#title").placeholder = url ? "영상 제목 사용" : file ? file.name.replace(/\.[^.]+$/, "") : "파일 이름 사용";
+  }
 }
 
 function setFile(f) {
   state.file = f;
   $("#file-name").textContent = f ? `${f.name} (${(f.size / 1048576).toFixed(1)} MB)` : "";
-  if (f) $("#url").value = "";  // 파일을 고르면 링크 대신 파일 사용
   updateStartButton();
 }
 
+// 입력 탭: 링크 / 음원 파일 / 악보 파일. 두 파일 탭은 같은 #drop·#file 을 쓰고 안내와 받는 형식만 바뀐다.
+const SCORE_EXT = [".mid", ".midi", ".kar", ".musicxml", ".mxl", ".xml"];
+const SOURCE_TEXT = {
+  audio: { title: "음원 파일을 끌어다 놓기", help: "오디오·영상 파일, 악기별 스템 ZIP", label: "음원 파일 선택 (오디오·영상 또는 스템 ZIP)" },
+  score: { title: "악보 파일을 끌어다 놓기", help: "MIDI · MusicXML", label: "악보 파일 선택 (MIDI·MusicXML)" },
+};
+
+function fileKind(name) {
+  const ext = (String(name).match(/\.[^.]+$/) || [""])[0].toLowerCase();
+  if (SCORE_EXT.includes(ext)) return "score";
+  const all = state.info && state.info.extensions;
+  return !all || all.includes(ext) ? "audio" : null;
+}
+
+function sourceExtensions(src) {
+  return ((state.info && state.info.extensions) || []).filter((e) => (src === "score") === SCORE_EXT.includes(e));
+}
+
+function setSource(src, focus = false) {
+  state.source = src;
+  $$("#src-tabs [role=tab]").forEach((b) => {
+    const on = b.dataset.src === src;
+    b.setAttribute("aria-selected", String(on));
+    b.tabIndex = on ? 0 : -1;
+    if (on && focus) b.focus();
+  });
+  $("#src-panel-link").classList.toggle("hidden", src !== "link");
+  $("#src-panel-file").classList.toggle("hidden", src === "link");
+  if (src !== "link") {
+    const t = SOURCE_TEXT[src];
+    const exts = sourceExtensions(src);
+    $("#src-panel-file").setAttribute("aria-labelledby", `src-tab-${src}`);
+    $("#drop-title").textContent = t.title;
+    $("#file-help").textContent = t.help;
+    $("#file").setAttribute("aria-label", t.label);
+    $("#file").accept = exts.join(",");
+    $("#ext-hint").textContent = exts.length ? `받는 형식: ${exts.join(", ")}` : "";
+    if (state.file && fileKind(state.file.name) !== src) {  // 다른 탭 종류의 파일은 비운다
+      setFile(null);
+      $("#file").value = "";
+    }
+  }
+  updateStartButton();
+}
+
+// 고르거나 끌어 놓은 파일: 종류에 맞는 탭으로 옮기고, 못 받는 형식이면 알린다.
+function pickFile(f) {
+  if (!f) return;
+  const kind = fileKind(f.name);
+  $("#start-error").textContent = "";
+  if (!kind) {
+    $("#file").value = "";
+    $("#start-error").textContent = `${f.name}: 받을 수 없는 형식이에요. 음원(오디오·영상·스템 ZIP)이나 악보(MIDI·MusicXML) 파일을 넣어 주세요.`;
+    return;
+  }
+  if (kind !== state.source) setSource(kind);
+  setFile(f);
+}
+
+function setQuality(v) {
+  state.quality = v;
+  $$("#quality button").forEach((x) => {
+    x.classList.toggle("on", x.dataset.v === v);
+    x.setAttribute("aria-pressed", String(x.dataset.v === v));
+  });
+}
+
+// role=tablist 키보드: ←/→ (위아래 탭이면 ↑/↓ 도), Home/End 로 옮기며 바로 고른다.
+function bindTablist(list, select) {
+  list.addEventListener("keydown", (e) => {
+    const tabs = $$(`#${list.id} [role=tab]`);
+    const i = tabs.indexOf(document.activeElement);
+    if (i < 0) return;
+    const n = tabs.length;
+    const j = { ArrowRight: i + 1, ArrowDown: i + 1, ArrowLeft: i - 1, ArrowUp: i - 1, Home: 0, End: n - 1 }[e.key];
+    if (j === undefined) return;
+    e.preventDefault();
+    select(tabs[(j + n) % n], true);
+  });
+}
+
 function initNewView() {
+  const card = $(".source-card");
   const drop = $("#drop");
-  $("#file").addEventListener("change", (e) => setFile(e.target.files[0]));
-  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
-  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
-  drop.addEventListener("drop", (e) => {
+  $("#file").addEventListener("change", (e) => pickFile(e.target.files[0]));
+  // 파일은 입력 카드 어디에 놓아도 받는다 (링크 탭이면 파일 탭으로 옮김)
+  card.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); card.classList.add("over"); });
+  card.addEventListener("dragleave", (e) => {
+    if (e.relatedTarget && card.contains(e.relatedTarget)) return;
+    drop.classList.remove("over");
+    card.classList.remove("over");
+  });
+  card.addEventListener("drop", (e) => {
     e.preventDefault();
     drop.classList.remove("over");
-    if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+    card.classList.remove("over");
+    if (e.dataTransfer.files.length) pickFile(e.dataTransfer.files[0]);
   });
-  $$("#quality button").forEach((b) => {
-    b.setAttribute("aria-pressed", String(b.dataset.v === state.quality));
-    b.addEventListener("click", () => {
-      $$("#quality button").forEach((x) => {
-        x.classList.toggle("on", x === b);
-        x.setAttribute("aria-pressed", String(x === b));
-      });
-      state.quality = b.dataset.v;
-    });
-  });
+  $$("#src-tabs [role=tab]").forEach((b) => b.addEventListener("click", () => setSource(b.dataset.src)));
+  bindTablist($("#src-tabs"), (b, focus) => setSource(b.dataset.src, focus));
+  $$("#quality button").forEach((b) => b.addEventListener("click", () => setQuality(b.dataset.v)));
+  setQuality(state.quality);
+  $("#btn-settings").addEventListener("click", () => openSettings("new"));
+  initSettings();
   $("#url").addEventListener("input", updateStartButton);
   $("#url").addEventListener("keydown", (e) => { if (e.key === "Enter" && urlValue()) startJob(); });
   $("#fetch-only").addEventListener("change", updateStartButton);
@@ -226,10 +317,10 @@ function initNewView() {
 }
 
 async function startJob() {
-  if (state.startingJob || !(urlValue() || state.file)) return;
+  if (state.startingJob || !(urlValue() || fileValue())) return;
   state.startingJob = true;
   const context = jobContext();
-  const file = state.file;
+  const file = fileValue();
   $("#start-error").textContent = "";
   const options = {
     title: $("#title").value.trim(),
@@ -283,6 +374,240 @@ async function startJob() {
     state.startingJob = false;
     updateStartButton();
   }
+}
+
+// ------------------------------------------------------------------ 분석 설정 창
+// openSettings(mode) — 분석 설정 창(#settings-dialog)을 연다.
+//   "new": 새 작업 옵션. 「적용」은 닫기만 하고, 값은 「악보 만들기 시작」(startJob)이 같은 id 로 읽는다.
+//   "reanalyze": 지금 작업(state.job.options)으로 채워 열고, 바뀐 것이 있으면 「다시 분석하기」 → reanalyzeJob(options).
+//   창 안의 칸은 새 작업 칸 그대로라, 다시 분석 창은 열 때의 새 작업 값을 기억했다가 닫을 때 되돌린다.
+// reanalyzeJob(options) — POST /api/jobs/{id}/reanalyze. 성공하면 작업을 다시 골라 진행 화면 폴링으로 넘긴다.
+const SETTING_DEFAULTS = {
+  quality: "standard", split_vocals: true, split_drums: true, cleanup: true, pdf: false, stems: [],
+  title: "", time_signature: "auto", bpm: null, target_key: "", start: null, duration: null,
+  lyrics: false, language: "ko", split_songs: false,
+};
+const REANALYZE_KEYS = ["quality", "split_vocals", "split_drums", "cleanup", "pdf", "stems", "title",
+  "time_signature", "bpm", "target_key", "start", "duration", "lyrics", "language"];
+const SETTING_KEYS = Object.keys(SETTING_DEFAULTS);
+const SETTING_TABS = ["quality", "inst", "info", "lyrics"];
+
+function settingNumber(v) {
+  if (v === null || v === undefined || String(v).trim() === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function settingsFromOptions(o) {
+  const d = SETTING_DEFAULTS;
+  const bool = (k) => (typeof o[k] === "boolean" ? o[k] : d[k]);
+  return {
+    quality: ["fast", "standard", "high"].includes(o.quality) ? o.quality : d.quality,
+    split_vocals: bool("split_vocals"), split_drums: bool("split_drums"), cleanup: bool("cleanup"), pdf: bool("pdf"),
+    stems: Array.isArray(o.stems) ? o.stems.map(String) : [],
+    title: String(o.title || "").trim(), time_signature: o.time_signature || "auto",
+    bpm: settingNumber(o.bpm), target_key: o.target_key || "",
+    start: settingNumber(o.start), duration: settingNumber(o.duration),
+    lyrics: !!o.lyrics, language: o.language || "ko", split_songs: !!o.split_songs,
+  };
+}
+
+function readSettings() {
+  return {
+    quality: state.settings ? state.settings.quality : state.quality,
+    split_vocals: $("#split-vocals").checked, split_drums: $("#split-drums").checked,
+    cleanup: $("#cleanup").checked, pdf: $("#pdf").checked,
+    stems: $$("#instruments input:checked").map((x) => x.value),
+    title: $("#title").value.trim(), time_signature: $("#time-sig").value,
+    bpm: settingNumber($("#bpm").value), target_key: $("#target-key").value,
+    start: settingNumber($("#start").value), duration: settingNumber($("#duration").value),
+    lyrics: $("#lyrics").checked, language: $("#language").value, split_songs: $("#split-songs").checked,
+  };
+}
+
+function writeSettings(v) {
+  for (const [id, k] of [["#split-vocals", "split_vocals"], ["#split-drums", "split_drums"], ["#cleanup", "cleanup"],
+    ["#pdf", "pdf"], ["#lyrics", "lyrics"], ["#split-songs", "split_songs"]]) $(id).checked = !!v[k];
+  $$("#instruments input").forEach((x) => { x.checked = v.stems.includes(x.value); });
+  $("#title").value = v.title;
+  $("#time-sig").value = v.time_signature;
+  $("#bpm").value = v.bpm === null ? "" : String(v.bpm);
+  $("#target-key").value = v.target_key;
+  $("#start").value = v.start === null ? "" : String(v.start);
+  $("#duration").value = v.duration === null ? "" : String(v.duration);
+  $("#language").value = v.language;
+}
+
+// 바뀐 설정 수: 악기는 고른 것·뺀 것 하나하나, 나머지는 항목마다 1
+function countSettingChanges(a, b, keys) {
+  let n = 0;
+  for (const k of keys) {
+    if (k === "stems") {
+      const x = new Set(a.stems), y = new Set(b.stems);
+      for (const v of x) if (!y.has(v)) n++;
+      for (const v of y) if (!x.has(v)) n++;
+    } else if (a[k] !== b[k]) n++;
+  }
+  return n;
+}
+
+// 새 작업 화면의 「분석 설정」 버튼 옆 숫자: 창 안에만 있는 설정 중 기본값과 다른 것 (악기 분리는 화면에 보이므로 뺌)
+function updateSettingsCount() {
+  if (state.settings) return;
+  const n = countSettingChanges(readSettings(), SETTING_DEFAULTS, SETTING_KEYS.filter((k) => k !== "quality"));
+  $("#settings-count").textContent = String(n);
+  $("#settings-count").classList.toggle("hidden", !n);
+  $("#settings-count-sr").textContent = n ? `, 기본값에서 바뀐 설정 ${n}개` : "";
+}
+
+function setSettingsTab(tab, focus = false) {
+  state.settingsTab = tab;
+  $$("#settings-tabs [role=tab]").forEach((b) => {
+    const on = b.dataset.tab === tab;
+    b.setAttribute("aria-selected", String(on));
+    b.tabIndex = on ? 0 : -1;
+    if (on && focus) b.focus();
+  });
+  for (const t of SETTING_TABS) $(`#sd-panel-${t}`).classList.toggle("hidden", t !== tab);
+}
+
+function setSettingsQuality(v) {
+  if (state.settings) state.settings.quality = v;
+  $$("#set-quality button").forEach((x) => {
+    x.classList.toggle("on", x.dataset.v === v);
+    x.setAttribute("aria-pressed", String(x.dataset.v === v));
+  });
+  updateSettingsSummary();
+}
+
+function updateSettingsSummary() {
+  const s = state.settings;
+  if (!s) return;
+  const re = s.mode === "reanalyze";
+  const n = countSettingChanges(readSettings(), s.baseline, re ? REANALYZE_KEYS : SETTING_KEYS);
+  const pending = re && state.analysisJobs.has(s.jobId);
+  const summary = $("#settings-summary");
+  summary.textContent = !n ? "바뀐 설정이 없어요" :
+    `바뀐 설정 ${n}개 · ${re ? "다시 분석하면 반영돼요" : "악보 만들기를 시작하면 반영돼요"}`;
+  summary.classList.toggle("changed", n > 0);
+  const apply = $("#settings-apply");
+  apply.textContent = !re ? "적용" : pending ? "다시 분석 시작하는 중…" : "다시 분석하기";
+  apply.disabled = re && (pending || !n);
+  apply.setAttribute("aria-busy", String(pending));
+}
+
+function openSettings(mode = "new") {
+  const dlg = $("#settings-dialog");
+  if (!dlg || typeof dlg.showModal !== "function" || dlg.open) return false;
+  const re = mode === "reanalyze";
+  const job = state.job;
+  if (re && !(job && job.id === state.jobId && job.kind !== "remix")) return false;
+  state.settings = null;
+  const saved = readSettings();  // 지금의 새 작업 값 (취소하거나 다시 분석 창을 닫으면 되돌림)
+  state.settings = {
+    mode: re ? "reanalyze" : "new", saved, quality: saved.quality, baseline: null,
+    jobId: re ? job.id : null, placeholder: $("#title").placeholder,
+  };
+  if (re) {
+    const o = settingsFromOptions(job.options || {});
+    state.settings.quality = o.quality;
+    writeSettings(o);
+    $("#title").placeholder = job.title || "파일 이름 사용";
+  }
+  // 칸이 나타낼 수 있는 값으로 맞춘 기준 (목록에 없는 악기·키는 빠진다)
+  state.settings.baseline = re ? readSettings() : { ...SETTING_DEFAULTS };
+  $("#settings-sub").textContent = re ? job.title : "새 작업 · 악보 만들기를 시작할 때 써요";
+  $("#settings-warn").classList.toggle("hidden", !re);
+  $("#sd-key-note").classList.toggle("hidden", !re);
+  $("#sd-split-songs").classList.toggle("hidden", re);  // 한 곡을 다시 분석할 때는 곡 나누기 없음
+  $("#settings-error").textContent = "";
+  setSettingsQuality(state.settings.quality);
+  setSettingsTab(state.settingsTab || "info");
+  updateSettingsSummary();
+  dlg.showModal();
+  return true;
+}
+
+// 창 닫기의 마무리 (닫기 전에 부른다). applied=false 면 새 작업 칸을 열 때 값으로 되돌린다.
+function finishSettings(applied) {
+  const s = state.settings;
+  if (!s) return;
+  state.settings = null;
+  if (s.mode === "new" && applied) {
+    setQuality(s.quality);
+  } else {
+    writeSettings(s.saved);
+    $("#title").placeholder = s.placeholder;
+  }
+  updateSettingsCount();
+  updateStartButton();
+}
+
+function closeSettings(applied = false) {
+  finishSettings(applied);
+  const dlg = $("#settings-dialog");
+  if (dlg.open) dlg.close();
+}
+
+async function applySettings() {
+  const s = state.settings;
+  if (!s) return;
+  if (s.mode === "new") { closeSettings(true); return; }
+  const v = readSettings();
+  if (!countSettingChanges(v, s.baseline, REANALYZE_KEYS)) return;
+  const options = {};
+  for (const k of REANALYZE_KEYS) options[k] = v[k];
+  options.target_key = v.target_key || null;
+  await reanalyzeJob(options);
+}
+
+// 끝난(또는 실패한) 악보 작업을 바꾼 설정으로 처음부터 다시 분석한다. 한 작업에 한 번씩만.
+async function reanalyzeJob(options) {
+  const context = jobContext();
+  const job = state.job;
+  if (!job || job.id !== context.id || state.analysisJobs.has(context.id)) return false;
+  if (!canLeaveJob()) return false;  // 저장 안 한 음표 수정은 새 결과로 바뀐다
+  const inDialog = () => !!state.settings && state.settings.jobId === context.id;
+  state.analysisJobs.add(context.id);
+  updateSettingsSummary();
+  $("#settings-error").textContent = "";
+  try {
+    await api(`/api/jobs/${context.id}/reanalyze`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ options }),
+    });
+  } catch (e) {
+    if (isCurrentJob(context)) {
+      if (inDialog()) $("#settings-error").textContent = e.message;
+      else toast(e.message);
+    }
+    return false;
+  } finally {
+    state.analysisJobs.delete(context.id);
+    updateSettingsSummary();
+    updateAnalysisButtons();
+  }
+  if (inDialog()) closeSettings(true);
+  if (!isCurrentJob(context)) { loadJobs(); return true; }
+  state.viewJob = null;  // 새 결과는 그 결과의 키부터
+  selectJob(context.id);  // 소리·편집·오선 악보를 비우고 진행 화면으로
+  const next = jobContext();
+  await loadJobs();
+  if (isCurrentJob(next)) await refreshJob();
+  return true;
+}
+
+function initSettings() {
+  const dlg = $("#settings-dialog");
+  $$("#settings-tabs [role=tab]").forEach((b) => b.addEventListener("click", () => setSettingsTab(b.dataset.tab)));
+  bindTablist($("#settings-tabs"), (b, focus) => setSettingsTab(b.dataset.tab, focus));
+  $$("#set-quality button").forEach((b) => b.addEventListener("click", () => setSettingsQuality(b.dataset.v)));
+  $("#settings-close").addEventListener("click", () => closeSettings(false));
+  $("#settings-cancel").addEventListener("click", () => closeSettings(false));
+  $("#settings-apply").addEventListener("click", applySettings);
+  dlg.addEventListener("input", updateSettingsSummary);
+  dlg.addEventListener("change", updateSettingsSummary);
+  dlg.addEventListener("close", () => finishSettings(false));  // Esc 로 닫힘 = 취소
 }
 
 // ------------------------------------------------------------------ 내 영상 후보정

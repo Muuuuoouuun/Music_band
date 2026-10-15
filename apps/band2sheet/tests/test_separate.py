@@ -114,3 +114,45 @@ def test_demucs_mirror_env_can_disable_or_replace(monkeypatch):
     assert sep._demucs_mirrors() == ["https://a.example/x/", "https://b.example/y/"]
     monkeypatch.delenv("BAND2SHEET_DEMUCS_MIRROR")
     assert sep._demucs_mirrors() == list(sep.DEMUCS_MIRRORS)
+
+
+def test_fast_quality_skips_heavy_audio_separator_steps(tmp_path, monkeypatch):
+    """빠름: Demucs 4스템만 (메인/코러스·드럼 조각 모델은 CPU 에서 곡 길이의 수 배가 걸림)."""
+    from band2sheet import separate as sep
+
+    calls = []
+
+    def fake_demucs(src, out, model, device, shifts=1, log=None):
+        out.mkdir(parents=True, exist_ok=True)
+        paths = {}
+        for name in ("vocals", "drums", "bass", "other"):
+            (out / f"{name}.wav").write_bytes(b"x")
+            paths[name] = out / f"{name}.wav"
+        calls.append(("demucs", model))
+        return paths
+
+    monkeypatch.setattr(sep, "separate", fake_demucs)
+    monkeypatch.setattr(sep, "available", lambda key: True)
+    monkeypatch.setattr(sep, "run_separator", lambda *a, **k: calls.append(("separator", a[0])) or {})
+    res = sep.separate_detailed(tmp_path / "mix.wav", tmp_path / "out", "fast", True, True, log=lambda m: None)
+    assert calls == [("demucs", "htdemucs")]
+    assert set(res.stems) == {"vocals", "drums", "bass", "other"}
+    assert any("생략" in n for n in res.notes)
+
+    calls.clear()
+    sep.separate_detailed(tmp_path / "mix.wav", tmp_path / "out2", "standard", True, True, log=lambda m: None)
+    assert [c[0] for c in calls] == ["demucs", "separator", "separator"]  # 코러스 + 드럼 조각
+
+
+def test_separator_overlap_is_light_on_cpu(monkeypatch):
+    from band2sheet import separate as sep
+
+    monkeypatch.delenv("BAND2SHEET_SEP_OVERLAP", raising=False)
+    monkeypatch.setattr(sep, "torch_device", lambda d=None: "cpu")
+    assert sep.separator_overlap() == 2
+    monkeypatch.setattr(sep, "torch_device", lambda d=None: "cuda")
+    assert sep.separator_overlap() is None  # GPU: 모델 기본값
+    monkeypatch.setenv("BAND2SHEET_SEP_OVERLAP", "4")
+    assert sep.separator_overlap() == 4
+    monkeypatch.setenv("BAND2SHEET_SEP_OVERLAP", "0")
+    assert sep.separator_overlap() is None

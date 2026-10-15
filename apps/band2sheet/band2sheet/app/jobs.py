@@ -425,8 +425,8 @@ class JobManager(EditMixin, PlaybackMixin):
                 raise RuntimeError("다른 키의 듣기 음원을 만드는 중입니다. 잠시 뒤 다시 시도해 주세요.")
             if (d / "project.json").exists():
                 shutil.copyfile(d / "project.json", d / "project.prev.json")
-            for sub in ("preview", "stems", "work", "input_stems"):
-                shutil.rmtree(d / sub, ignore_errors=True)
+            for sub in ("preview", "stems", "work", "input_stems", *(p.name for p in d.glob("sheets_*"))):
+                shutil.rmtree(d / sub, ignore_errors=True)  # 이전 분석의 악보 파일이 섞이지 않게
             for key in [k for k in self._playback if k[0] == job_id]:
                 self._playback.pop(key, None)
             title = str(options.get("title") or "").strip()[:120]

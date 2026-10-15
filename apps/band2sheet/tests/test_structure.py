@@ -131,6 +131,27 @@ def test_pdf_export(project, tmp_path):
     assert pdf.exists() and pdf.read_bytes()[:4] == b"%PDF"
 
 
+@pytest.mark.skipif(any(importlib.util.find_spec(m) is None for m in ("verovio", "cairosvg", "pypdf")),
+                    reason="PDF 엔진 미설치")
+def test_pdf_export_when_verovio_starts_in_a_worker_thread(project, tmp_path):
+    """앱에서는 'PDF 저장' 요청 스레드가 Verovio 를 처음 쓸 수 있다 — 그래도 글꼴을 찾아야 한다.
+
+    (처음 만든 toolkit 이 작업 스레드면 글꼴을 못 찾던 문제는 새 프로세스에서만 재현된다)"""
+    import subprocess
+    import sys
+
+    res = render(project, tmp_path, RenderOptions(stems=["vocals"]), log=lambda m: None)
+    xml = res.out_dir / "lead_sheet.musicxml"
+    code = ("import sys, threading, verovio; from pathlib import Path; from band2sheet.pipeline import export_pdf_verovio\n"
+            "out = {}\n"
+            "t = threading.Thread(target=lambda: out.update(pdf=export_pdf_verovio(Path(sys.argv[1]), Path(sys.argv[2]))))\n"
+            "t.start(); t.join(); sys.exit(0 if out['pdf'] else 3)")
+    pdf = tmp_path / "thread.pdf"
+    r = subprocess.run([sys.executable, "-c", code, str(xml), str(pdf)], capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0, r.stderr[-800:]
+    assert pdf.read_bytes()[:4] == b"%PDF"
+
+
 def test_activity_mask_cleanup():
     from band2sheet.cleanup import _clean_mask
 

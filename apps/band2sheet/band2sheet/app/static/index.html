@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>band2sheet 악보 스튜디오</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238c82ef'/%3E%3Cpath d='M10 8v16M16 8v16M22 8v16M7 12h18M7 20h18' stroke='%23191b22' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23c67139'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/style.css">
 <link rel="stylesheet" href="/static/popover.css">
 </head>
 <body>
 <a class="skip-link" href="#main">작업 영역으로 건너뛰기</a>
 <header class="topbar">
-  <div class="brand"><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M9 6v20M16 6v20M23 6v20M5 11h22M5 21h22"/></svg><b>band2sheet</b><span class="brand-divider" aria-hidden="true"></span><span class="brand-sub">악보 스튜디오</span></div>
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span><b>band2sheet</b><span class="brand-divider" aria-hidden="true"></span><span class="brand-sub">악보 스튜디오</span></div>
   <div class="top-right">
     <span id="device-chip" class="chip"></span>
     <button id="btn-engines" class="ghost">엔진 상태</button>
@@ -36,90 +36,69 @@
         <button data-mode="remix" aria-pressed="false">내 영상 후보정<small>화음 · 반주 7가지 · 오토튠</small></button>
       </div>
       <div id="mode-score">
-      <div class="new-heading"><span class="eyebrow">새 작업</span><h1>연주를, 읽을 수 있는 악보로.</h1>
-      <p class="muted">링크 또는 음원을 추가하세요. 악기별 악보, TAB, 코드표를 한 작업실에서 확인하고 다듬습니다.</p></div>
-      <div class="source-inputs">
+      <div class="new-heading"><span class="eyebrow">새 작업</span><h1 class="display">연주를, 읽을 수 있는 악보로.</h1>
+      <p class="muted">링크나 음원·악보 파일을 넣으세요. 악기별 악보, TAB, 코드표를 한 작업실에서 확인하고 다듬습니다.</p></div>
 
-      <div class="card url-card">
-        <label class="input-heading" for="url">영상 링크</label>
-        <input id="url" type="url" inputmode="url" autocomplete="off"
-               placeholder="YouTube 링크 붙여넣기" aria-describedby="url-hint">
-        <p id="url-hint" class="muted small">음성을 받아 바로 분석합니다. 영상 보관과 구간 선택은 받기 옵션에서 설정하세요.</p>
-        <details class="url-more">
-          <summary>받기 옵션</summary>
-          <label class="check"><input type="checkbox" id="keep-video"> 영상도 받기 (앱에서 보면서 구간 고르기·영상 저장)</label>
-          <label class="check"><input type="checkbox" id="fetch-only"> 받기 · 음성 추출까지만 (구간을 정한 뒤 악보 만들기)</label>
-          <div class="row">
-            <label>영상 화질<select id="max-height" disabled>
-              <option value="480">480p (가볍게)</option><option value="720" selected>720p</option>
-              <option value="1080">1080p</option></select></label>
-            <label>저장할 음성 형식<select id="audio-format">
-              <option value="mp3" selected>MP3</option><option value="wav">WAV (무손실)</option>
-              <option value="m4a">M4A</option><option value="flac">FLAC (무손실)</option></select></label>
+      <div class="card source-card">
+        <div id="src-tabs" class="pill-tabs src-tabs" role="tablist" aria-label="가져올 곳">
+          <button type="button" role="tab" id="src-tab-link" data-src="link" aria-selected="true" aria-controls="src-panel-link">링크</button>
+          <button type="button" role="tab" id="src-tab-audio" data-src="audio" aria-selected="false" aria-controls="src-panel-file" tabindex="-1">음원 파일</button>
+          <button type="button" role="tab" id="src-tab-score" data-src="score" aria-selected="false" aria-controls="src-panel-file" tabindex="-1">악보 파일</button>
+        </div>
+
+        <div id="src-panel-link" class="src-panel url-card" role="tabpanel" aria-labelledby="src-tab-link">
+          <label class="sr-only" for="url">영상 링크</label>
+          <div class="url-field">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            <input id="url" type="url" inputmode="url" autocomplete="off"
+                   placeholder="YouTube 링크 붙여넣기" aria-describedby="url-hint">
           </div>
-        </details>
-      </div>
+          <p id="url-hint" class="muted small">음성을 받아 바로 분석합니다. 영상 보관과 구간 선택은 받기 옵션에서 설정하세요.</p>
+          <details class="url-more">
+            <summary>받기 옵션</summary>
+            <label class="check"><input type="checkbox" id="keep-video"> 영상도 받기 (앱에서 보면서 구간 고르기·영상 저장)</label>
+            <label class="check"><input type="checkbox" id="fetch-only"> 받기 · 음성 추출까지만 (구간을 정한 뒤 악보 만들기)</label>
+            <div class="row">
+              <label>영상 화질<select id="max-height" disabled>
+                <option value="480">480p (가볍게)</option><option value="720" selected>720p</option>
+                <option value="1080">1080p</option></select></label>
+              <label>저장할 음성 형식<select id="audio-format">
+                <option value="mp3" selected>MP3</option><option value="wav">WAV (무손실)</option>
+                <option value="m4a">M4A</option><option value="flac">FLAC (무손실)</option></select></label>
+            </div>
+          </details>
+        </div>
 
+        <div id="src-panel-file" class="src-panel hidden" role="tabpanel" aria-labelledby="src-tab-audio">
+          <label id="drop" class="drop">
+            <input id="file" class="file-input" type="file" aria-label="음원 파일 선택" aria-describedby="file-help ext-hint">
+            <svg class="upload-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></svg>
+            <span class="drop-text"><b id="drop-title">음원 파일을 끌어다 놓기</b>
+              <span id="file-help" class="muted small">오디오·영상 파일, 악기별 스템 ZIP</span></span>
+            <span class="drop-pick" aria-hidden="true">파일 고르기</span>
+            <span class="sr-only" id="ext-hint"></span>
+            <span id="file-name" class="file-name"></span>
+          </label>
+        </div>
 
-      <label id="drop" class="drop">
-        <input id="file" class="file-input" type="file" aria-label="오디오·영상 또는 스템 ZIP 파일 선택" aria-describedby="file-help">
-        <svg class="upload-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v5h16v-5"/></svg>
-        <div><b>파일 선택</b><span class="muted"> 또는 여기에 놓기</span></div>
-        <div class="muted small" id="file-help">오디오·영상 파일, 악기별 스템 ZIP, 또는 MIDI·MusicXML 악보</div>
-        <span class="sr-only" id="ext-hint">mp3, wav, m4a, mp4, mov ...</span>
-        <div id="file-name" class="file-name"></div>
-      </label>
+        <div class="quality-row">
+          <span id="quality-label" class="field-label">악기 분리</span>
+          <div class="seg quality-seg" id="quality" role="group" aria-labelledby="quality-label">
+            <button type="button" data-v="fast" aria-pressed="false">빠름<small>4개 악기</small></button>
+            <button type="button" data-v="standard" class="on" aria-pressed="true">표준<small>6개 악기</small></button>
+            <button type="button" data-v="high" aria-pressed="false">고품질<small>보컬 정밀</small></button>
+          </div>
+        </div>
+
+        <div class="start-actions">
+          <button id="btn-start" class="primary big" disabled>악보 만들기 시작</button>
+          <button id="btn-settings" type="button" aria-haspopup="dialog">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></svg>분석 설정<span id="settings-count" class="count hidden" aria-hidden="true"></span><span id="settings-count-sr" class="sr-only"></span>
+          </button>
+          <span class="muted small">원본 파일은 그대로 보관됩니다.</span>
+        </div>
       </div>
-      <div class="start-actions"><button id="btn-start" class="primary big" disabled>악보 만들기 시작</button><span class="muted small">원본 파일은 그대로 보관됩니다.</span></div>
       <p id="start-error" class="error" role="alert"></p>
-      <details id="analysis-options" class="analysis-options"><summary><span>분석 옵션</span><span class="muted small">악기 · 키 · 구간 · 가사</span></summary>
-      <div class="grid2">
-        <div class="card">
-          <h3>분리 품질</h3>
-          <div class="seg" id="quality">
-            <button data-v="fast">빠름<small>4개 악기</small></button>
-            <button data-v="standard" class="on">표준<small>6개 악기</small></button>
-            <button data-v="high">고품질<small>보컬 정밀 분리</small></button>
-          </div>
-          <label class="check"><input type="checkbox" id="split-vocals" checked> 메인 보컬 / 코러스(화음) 나누기</label>
-          <label class="check"><input type="checkbox" id="split-drums" checked> 드럼 조각 나누기 (킥·스네어·탐·하이햇·심벌)</label>
-          <label class="check"><input type="checkbox" id="cleanup" checked> 다른 악기 소리(블리딩)·유령음 정리</label>
-          <label class="check"><input type="checkbox" id="pdf"> PDF 악보도 만들기</label>
-        </div>
-        <div class="card">
-          <h3>악보로 만들 악기</h3>
-          <div id="instruments" class="pills"></div>
-          <p class="muted small">비워 두면 소리가 있는 악기는 모두 만듭니다.</p>
-        </div>
-        <div class="card">
-          <h3>곡 정보 (선택)</h3>
-          <div class="row">
-            <label>제목<input id="title" placeholder="파일 이름 사용"></label>
-          </div>
-          <div class="row">
-            <label>박자<select id="time-sig">
-              <option value="auto">자동</option><option>4/4</option><option>3/4</option>
-              <option>6/8</option><option>12/8</option><option>2/4</option></select></label>
-            <label>템포(BPM)<input id="bpm" type="number" min="30" max="260" placeholder="자동"></label>
-            <label>만들 키<select id="target-key"><option value="">원래 키</option></select></label>
-          </div>
-          <div class="row">
-            <label>시작(초)<input id="start" type="number" min="0" placeholder="처음부터"></label>
-            <label>길이(초)<input id="duration" type="number" min="1" placeholder="끝까지"></label>
-          </div>
-          <label class="check"><input type="checkbox" id="split-songs"> 곡이 여러 개 든 예배·공연 실황 — 먼저 곡별로 나누기</label>
-          <p class="muted small">말씀·기도·전환을 빼고 찬양 구간을 찾아 줍니다. 고른 곡마다 악보를 따로 만들어요. 한 곡만 알면 시작/길이를 직접 넣어도 됩니다.</p>
-        </div>
-        <div class="card">
-          <h3>가사</h3>
-          <label class="check"><input type="checkbox" id="lyrics"> 보컬에서 가사 인식해 악보에 넣기</label>
-          <div class="row"><label>언어<select id="language">
-            <option value="ko">한국어</option><option value="en">English</option><option value="ja">日本語</option>
-          </select></label></div>
-          <p class="muted small" id="lyrics-hint"></p>
-        </div>
-      </div>
-      </details>
       </div>
 
       <!-- 내 영상 후보정 -->
@@ -430,6 +409,77 @@
   <p class="muted small">설치된 오픈소스 엔진이 많을수록 더 정확하고 자세하게 채보합니다. 설치되지 않은 엔진은 자동으로 대체 엔진을 씁니다.</p>
   <table id="engines-table"></table>
   <form method="dialog"><button class="primary">닫기</button></form>
+</dialog>
+
+<!-- 분석 설정: 새 작업의 옵션 + 결과 화면의 「다시 분석」 (app.js openSettings) -->
+<dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title" aria-describedby="settings-sub">
+  <div class="sd-head">
+    <div class="sd-heading">
+      <h2 id="settings-title" class="sd-title">분석 설정</h2>
+      <p id="settings-sub" class="sd-sub">새 작업에 쓸 설정</p>
+    </div>
+    <button type="button" id="settings-close" class="icon-button round" aria-label="닫기" title="닫기"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div id="settings-tabs" class="pill-tabs sd-tabs" role="tablist" aria-label="설정 종류">
+    <button type="button" role="tab" id="sd-tab-quality" data-tab="quality" aria-controls="sd-panel-quality" aria-selected="false" tabindex="-1">분리 품질</button>
+    <button type="button" role="tab" id="sd-tab-inst" data-tab="inst" aria-controls="sd-panel-inst" aria-selected="false" tabindex="-1">악보로 만들 악기</button>
+    <button type="button" role="tab" id="sd-tab-info" data-tab="info" aria-controls="sd-panel-info" aria-selected="true">곡 정보</button>
+    <button type="button" role="tab" id="sd-tab-lyrics" data-tab="lyrics" aria-controls="sd-panel-lyrics" aria-selected="false" tabindex="-1">가사</button>
+  </div>
+  <div class="sd-body">
+    <section id="sd-panel-quality" class="sd-panel hidden" role="tabpanel" aria-labelledby="sd-tab-quality">
+      <div class="seg quality-seg big-seg" id="set-quality" role="group" aria-label="분리 품질">
+        <button type="button" data-v="fast" aria-pressed="false">빠름<small>4개 악기</small></button>
+        <button type="button" data-v="standard" aria-pressed="true" class="on">표준<small>6개 악기</small></button>
+        <button type="button" data-v="high" aria-pressed="false">고품질<small>보컬 정밀 분리</small></button>
+      </div>
+      <label class="check"><input type="checkbox" id="split-vocals" checked> 메인 보컬 / 코러스(화음) 나누기</label>
+      <label class="check"><input type="checkbox" id="split-drums" checked> 드럼 조각 나누기 (킥·스네어·탐·하이햇·심벌)</label>
+      <label class="check"><input type="checkbox" id="cleanup" checked> 다른 악기 소리(블리딩)·유령음 정리</label>
+      <label class="check"><input type="checkbox" id="pdf"> PDF 악보도 만들기</label>
+    </section>
+    <section id="sd-panel-inst" class="sd-panel hidden" role="tabpanel" aria-labelledby="sd-tab-inst">
+      <div id="instruments" class="pills" role="group" aria-label="악보로 만들 악기"></div>
+      <p class="muted small">비워 두면 소리가 있는 악기는 모두 만듭니다.</p>
+    </section>
+    <section id="sd-panel-info" class="sd-panel" role="tabpanel" aria-labelledby="sd-tab-info">
+      <label class="field">제목<input id="title" placeholder="파일 이름 사용"></label>
+      <div class="row row3">
+        <label class="field">박자<select id="time-sig">
+          <option value="auto">자동</option><option>4/4</option><option>3/4</option>
+          <option>6/8</option><option>12/8</option><option>2/4</option></select></label>
+        <label class="field">템포(BPM)<input id="bpm" type="number" min="30" max="260" inputmode="decimal" placeholder="자동"></label>
+        <label class="field">만들 키<select id="target-key"><option value="">원래 키</option></select></label>
+      </div>
+      <div class="row">
+        <label class="field">시작(초)<input id="start" type="number" min="0" inputmode="decimal" placeholder="처음부터"></label>
+        <label class="field">길이(초)<input id="duration" type="number" min="1" inputmode="decimal" placeholder="끝까지"></label>
+      </div>
+      <div id="sd-split-songs">
+        <label class="check"><input type="checkbox" id="split-songs" aria-describedby="split-songs-help"> 곡이 여러 개 든 예배·공연 실황 — 먼저 곡별로 나누기</label>
+        <p id="split-songs-help" class="muted small">말씀·기도·전환을 빼고 찬양 구간을 찾아 줍니다. 고른 곡마다 악보를 따로 만들어요. 한 곡만 알면 시작/길이를 직접 넣어도 됩니다.</p>
+      </div>
+      <p id="sd-key-note" class="tag tag-accent-2 hidden">키만 바꾸려면 결과 화면의 키 변경을 쓰세요. 분석 없이 바로 바뀝니다.</p>
+    </section>
+    <section id="sd-panel-lyrics" class="sd-panel hidden" role="tabpanel" aria-labelledby="sd-tab-lyrics">
+      <label class="check"><input type="checkbox" id="lyrics"> 보컬에서 가사 인식해 악보에 넣기</label>
+      <label class="field narrow">언어<select id="language">
+        <option value="ko">한국어</option><option value="en">English</option><option value="ja">日本語</option>
+      </select></label>
+      <p class="muted small" id="lyrics-hint"></p>
+    </section>
+  </div>
+  <div class="sd-foot">
+    <div class="sd-notes">
+      <p id="settings-summary" class="sd-summary" aria-live="polite">바뀐 설정이 없어요</p>
+      <p id="settings-warn" class="sd-warn hidden">다시 분석하면 직접 고친 코드·가사·음표는 새 결과로 바뀌어요. 이전 결과는 백업으로 남겨 둬요.</p>
+      <p id="settings-error" class="error" role="alert"></p>
+    </div>
+    <div class="sd-actions">
+      <button type="button" id="settings-cancel">취소</button>
+      <button type="button" id="settings-apply" class="primary">적용</button>
+    </div>
+  </div>
 </dialog>
 
 <script src="/static/vendor/opensheetmusicdisplay.min.js"></script>

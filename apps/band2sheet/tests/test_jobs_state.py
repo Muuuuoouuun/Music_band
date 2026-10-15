@@ -242,7 +242,7 @@ def done_job(manager, jobs_module, job_id="done1"):
     d.mkdir()
     (d / "input.wav").write_bytes(b"synthetic input")
     (d / "project.json").write_text('{"title": "edited"}', encoding="utf-8")
-    for sub in ("preview/k+2", "stems", "work"):
+    for sub in ("preview/k+2", "stems", "work", "sheets_G"):
         (d / sub).mkdir(parents=True)
         (d / sub / "x.mp3").write_bytes(b"old")
     manager.jobs[job.id] = job
@@ -265,7 +265,7 @@ def test_reanalyze_restarts_a_done_job_with_new_options(manager, jobs_module):
     assert job.result is None and job.renders == {}
     # The previous analysis is kept as a backup; stale audio caches are removed.
     assert (d / "project.prev.json").read_text(encoding="utf-8") == '{"title": "edited"}'
-    assert not (d / "preview").exists() and not (d / "stems").exists() and not (d / "work").exists()
+    assert not any((d / sub).exists() for sub in ("preview", "stems", "work", "sheets_G"))
     assert (job.id, 2) not in manager._playback and ("other", 2) in manager._playback
     assert len(manager.pool.calls) == 1
     assert json.loads((d / "job.json").read_text(encoding="utf-8"))["status"] == "queued"
