@@ -274,32 +274,101 @@
     <!-- 결과 -->
     <section id="view-result" class="view hidden">
       <div class="result-head">
-        <div>
+        <button type="button" id="r-back" class="icon-button round r-back" aria-label="작업 목록으로" title="작업 목록으로"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
+        <div class="r-heading">
           <h1 id="r-title"></h1>
           <div id="r-meta" class="meta"></div>
         </div>
         <div class="actions">
-          <a id="r-zip" class="button primary"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/></svg><span>전체 다운로드</span></a>
+          <button type="button" id="r-settings" class="secondary"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg><span>분석 설정</span></button>
+          <a id="r-zip" class="button secondary"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/></svg><span>전체 다운로드</span></a>
+          <button type="button" id="r-pdf" class="primary"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/></svg><span>PDF 저장</span></button>
           <button id="r-delete" class="ghost danger icon-button" aria-label="이 작업 삭제" title="이 작업 삭제"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg></button>
         </div>
       </div>
+      <p id="r-pdf-error" class="error" role="alert"></p>
+
+      <!-- 이 작업을 만든 입력 + 악기 분리 품질 (다른 품질로 다시 채보) -->
+      <div id="r-source" class="rs-source">
+        <span id="r-src-kind" class="rs-kind"></span>
+        <span id="r-src-value" class="rs-value"></span>
+        <div id="r-quality-group" class="rs-quality">
+          <span class="label" id="r-quality-label">악기 분리</span>
+          <div class="seg pill-seg sage" id="r-quality" role="group" aria-labelledby="r-quality-label">
+            <button type="button" data-v="fast" aria-pressed="false" title="4개 악기 · 가장 빠름">빠름<small>4개 악기</small></button>
+            <button type="button" data-v="standard" aria-pressed="false" title="6개 악기">표준<small>6개 악기</small></button>
+            <button type="button" data-v="high" aria-pressed="false" title="보컬 정밀 분리 · 가장 느림">고품질<small>보컬 정밀</small></button>
+          </div>
+          <button type="button" id="r-rerun" class="secondary">다시 채보</button>
+        </div>
+      </div>
+
+      <!-- 키 바: 지금 키를 크게, 바꿀 키는 화살표 옆에. 「자세히」 = 12개 키 · 악기 · 카포 -->
+      <div id="keybar" class="keybar" role="group" aria-label="키 바꾸기">
+        <div class="keybar-row">
+          <button type="button" id="t-down" class="key-step" title="반음 내리기" aria-label="반음 내리기"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg><span id="t-down-name" class="key-step-name"></span></button>
+          <div class="keybar-now">
+            <span class="keybar-cap">지금 키</span>
+            <span id="t-key-name" class="keybar-key"></span>
+            <span id="t-info" class="keybar-off" role="status"></span>
+          </div>
+          <button type="button" id="t-up" class="key-step" title="반음 올리기" aria-label="반음 올리기"><span id="t-up-name" class="key-step-name"></span><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+          <span class="keybar-sep" aria-hidden="true"></span>
+          <button type="button" id="t-reset" class="ghost keybar-reset">원래 키로</button>
+          <button type="button" id="t-more" class="secondary keybar-more" aria-expanded="false" aria-controls="keypanel"><span>자세히</span><svg class="icon chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+          <label class="sr-only" for="t-key">악보 조성</label>
+          <select id="t-key" class="sr-only" tabindex="-1" aria-hidden="true"></select>
+        </div>
+        <div id="keypanel" class="keypanel hidden">
+          <div id="keyrow" class="keyrow" role="radiogroup" aria-label="키 고르기"></div>
+          <div class="keyrow-cap" aria-hidden="true"><span>← 낮게</span><span>높게 →</span></div>
+          <div class="keypanel-opts">
+            <span class="opt-label" id="presets-label">악기</span>
+            <div id="presets" class="preset-pills" role="group" aria-labelledby="presets-label"></div>
+            <span class="flex-spacer"></span>
+            <span class="opt-label" id="capo-label">카포</span>
+            <div class="stepper" role="group" aria-labelledby="capo-label">
+              <button type="button" id="capo-down" class="stepper-btn" aria-label="카포 내리기">−</button>
+              <output id="capo-val" class="stepper-val" aria-live="polite">0</output>
+              <button type="button" id="capo-up" class="stepper-btn" aria-label="카포 올리기">+</button>
+            </div>
+            <span id="capo-msg" class="stepper-msg">카포 없음</span>
+          </div>
+        </div>
+      </div>
+      <p id="preset-note" class="preset-note hidden"></p>
 
       <div class="workspace-tools">
         <nav id="viewtabs" class="viewtabs" aria-label="악보 보기 방식">
           <button data-view="chart" class="on">코드 악보</button>
+          <button data-view="score">오선 악보 · TAB</button>
           <button data-view="live">라이브 코드</button>
           <button data-view="roll">음표 편집</button>
-          <button data-view="score">오선 · TAB</button>
         </nav>
-        <div class="transpose" aria-label="조옮김">
-          <label class="sr-only" for="t-key">악보 조성</label>
-          <span class="label">키</span>
-          <button id="t-down" title="반음 내리기" aria-label="반음 내리기">−1</button>
-          <select id="t-key"></select>
-          <button id="t-up" title="반음 올리기" aria-label="반음 올리기">+1</button>
-          <button id="t-reset" class="ghost">원래 키</button>
-          <span id="t-info" class="muted small transpose-info" role="status"></span>
+      </div>
+
+      <!-- 재생 + 악기별 소리 -->
+      <div id="player-card" class="player-card card">
+        <div id="player" class="player hidden" role="group" aria-label="연주 재생">
+          <button id="m-play" class="primary play-btn">재생</button>
+          <input id="m-seek" aria-label="재생 위치" type="range" min="0" max="1000" value="0">
+          <span id="m-time" class="mono">0:00</span>
+          <span id="player-chord" class="player-chord"></span>
         </div>
+        <div class="mix-head">
+          <div class="seg pill-seg" id="mix-preset" role="group" aria-label="듣기 방식">
+            <button data-p="all" class="on">전체</button><button data-p="mr">반주(MR)</button><button data-p="vocal">보컬만</button><button data-p="score" id="preset-score" class="hidden">악보 소리</button>
+          </div>
+          <label class="switch"><input type="checkbox" id="m-keyfollow" role="switch" checked><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>조옮김한 키로 듣기</span></label>
+        </div>
+        <div id="pb-status" class="hint hidden"></div>
+        <details id="mixer-box" class="mixer-box">
+          <summary>악기별 소리 <span class="muted small">음소거(M) · 이 악기만(S) · 음량</span></summary>
+          <div id="mixer" class="stem-grid"></div>
+          <label class="check small"><input type="checkbox" id="m-follow" checked> 재생 위치 따라 오선 악보 마디 표시</label>
+          <p class="small mr-dl">반주 받기 (MP3, 지금 키):
+            <a id="dl-mr" href="#">MR — 메인 보컬 뺌</a><span class="dl-sep"> · </span><a id="dl-inst" href="#">코러스까지 뺌</a></p>
+        </details>
       </div>
 
       <div id="structure" class="structure hidden">
@@ -325,7 +394,7 @@
           <span id="live-sec" class="live-sec"></span>
           <span id="live-bar" class="muted"></span>
           <span id="live-beats" class="live-beats"></span>
-          <label class="check small live-capo"><input type="checkbox" id="live-capo"> 카포 모양으로 보기</label>
+          <label class="check small live-capo"><input type="checkbox" id="live-capo"> 추천 카포 모양으로 보기</label>
         </div>
         <div class="live-main">
           <div id="live-now"></div>
@@ -356,53 +425,74 @@
         <p class="hint">음표 누르기 = 선택 · 끌기 = 옮기기(끝을 끌면 길이) · ↑↓ = 반음(Shift = 옥타브) · Delete = 지우기 · 빈 곳 더블클릭 = 추가 · Ctrl+Z = 되돌리기 · 맨 위 줄 누르기 = 그 위치로 이동</p>
       </div>
 
-      <!-- 4) 오선 악보 -->
+      <!-- 4) 오선 악보: 악기별 악보 + A4 종이 -->
       <div id="v-score" class="vpane hidden">
         <div id="score-stale" class="stale hidden">키를 바꾸었거나 수정한 내용이 있어요. <button id="score-refresh" class="primary">오선 악보 다시 만들기</button></div>
         <div class="score-tools">
-          <nav id="tabs" class="tabs" aria-label="악기별 악보"></nav>
+          <nav id="tabs" class="part-tabs" aria-label="악기별 악보"></nav>
           <div class="zoom"><button id="z-out" aria-label="악보 축소">−</button><span id="z-val">100%</span><button id="z-in" aria-label="악보 확대">＋</button></div>
         </div>
         <div id="part-info" class="part-info"></div>
-        <div class="sheet-wrap card"><div id="sheet"></div><div id="sheet-loading" class="loading hidden" role="status">악보 그리는 중…</div></div>
+        <div class="sheet-wrap">
+          <div class="paper-page">
+            <span id="paper-part" class="paper-part"></span>
+            <header class="paper-head">
+              <div id="paper-title" class="paper-title"></div>
+              <div id="paper-sub" class="paper-sub"></div>
+              <div class="paper-cred"><span id="paper-key" class="paper-key"></span><span id="paper-credit" class="paper-credit"></span></div>
+            </header>
+            <div id="sheet"></div>
+            <div id="sheet-loading" class="loading hidden" role="status">악보 그리는 중…</div>
+          </div>
+        </div>
       </div>
 
       <div class="grid2 bottom supporting-panels">
-        <div class="card">
-          <h3>악기별 믹서</h3>
-          <label class="check small"><input type="checkbox" id="m-follow" checked> 재생 위치 따라 오선 악보 마디 표시</label>
-          <div class="seg small-seg" id="mix-preset">
-            <button data-p="all" class="on">전체</button><button data-p="mr">반주(MR)</button><button data-p="vocal">보컬만</button><button data-p="score" id="preset-score" class="hidden">악보 소리</button>
-          </div>
-          <label class="check small"><input type="checkbox" id="m-keyfollow" checked> 조옮김한 키로 듣기 (고음질 음정 이동, 드럼은 그대로)</label>
-          <div id="pb-status" class="hint hidden"></div>
-          <div id="mixer"></div>
-          <p class="small mr-dl">반주 받기 (MP3, 현재 키):
-            <a id="dl-mr" href="#">MR — 메인 보컬 뺌</a><span class="dl-sep"> · </span><a id="dl-inst" href="#">코러스까지 뺌</a></p>
-        </div>
         <div class="card">
           <h3>개별 파일 다운로드</h3>
           <p id="files-stale" class="hint hidden">수정한 내용/현재 키로 파일을 받으려면 <button id="files-refresh">파일 다시 만들기</button></p>
           <div id="files" class="files"></div>
         </div>
+        <div class="card" id="sep-card">
+          <h3>분리 결과 — 악기별 연주 구간</h3>
+          <p class="muted small">막대가 그 악기가 실제로 연주하는 구간입니다. 연주하지 않는 구간에 새어 들어온 소리와 유령음은 악보에서 자동으로 지웠어요.</p>
+          <div id="activity" class="activity"></div>
+        </div>
       </div>
-      <div class="card bottom" id="sep-card">
-        <h3>분리 결과 — 악기별 연주 구간</h3>
-        <p class="muted small">막대가 그 악기가 실제로 연주하는 구간입니다. 연주하지 않는 구간에 새어 들어온 소리와 유령음은 악보에서 자동으로 지웠어요.</p>
-        <div id="activity" class="activity"></div>
+
+      <!-- 모바일: 아래 키 독 + 「키 선택」 시트 -->
+      <div id="keydock" class="keydock">
+        <button type="button" id="kd-down" class="keydock-step" aria-label="반음 내리기"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><span id="kd-down-name"></span></button>
+        <button type="button" id="kd-open" class="keydock-now" aria-haspopup="dialog" aria-controls="keysheet">
+          <span class="keybar-cap">지금 키</span><span id="kd-key" class="keydock-key"></span><span id="kd-off" class="keydock-off"></span>
+        </button>
+        <button type="button" id="kd-up" class="keydock-step" aria-label="반음 올리기"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg><span id="kd-up-name"></span></button>
       </div>
     </section>
   </main>
 </div>
 
-<div id="player" class="player hidden" aria-label="연주 재생">
-  <button id="m-play" class="primary">재생</button>
-  <input id="m-seek" aria-label="재생 위치" type="range" min="0" max="1000" value="0">
-  <span id="m-time" class="mono">0:00</span>
-  <span id="player-chord" class="player-chord"></span>
-</div>
 <div id="chord-pop" class="chord-pop hidden"></div>
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+<!-- 모바일 키 선택 시트 (app.js openKeySheet) -->
+<dialog id="keysheet" class="keysheet" aria-labelledby="keysheet-title">
+  <span class="sheet-grabber" aria-hidden="true"></span>
+  <div class="sheet-head"><h2 id="keysheet-title">키 선택</h2><span id="ks-now" class="sheet-now"></span></div>
+  <div id="ks-grid" class="keygrid" role="radiogroup" aria-label="키 고르기"></div>
+  <p class="opt-label" id="ks-presets-label">악기에 맞춰 보기</p>
+  <div id="ks-presets" class="preset-grid" role="group" aria-labelledby="ks-presets-label"></div>
+  <div class="capo-row">
+    <span class="opt-label" id="ks-capo-label">기타 카포</span>
+    <div class="stepper touch" role="group" aria-labelledby="ks-capo-label">
+      <button type="button" id="ks-capo-down" class="stepper-btn" aria-label="카포 내리기">−</button>
+      <output id="ks-capo-val" class="stepper-val">0</output>
+      <button type="button" id="ks-capo-up" class="stepper-btn" aria-label="카포 올리기">+</button>
+    </div>
+    <span id="ks-capo-msg" class="stepper-msg">카포 없음</span>
+  </div>
+  <form method="dialog"><button class="primary block" id="ks-done">완료</button></form>
+</dialog>
 
 <dialog id="engines-dialog" aria-labelledby="engines-title">
   <h2 id="engines-title">엔진 상태</h2>

@@ -28,7 +28,7 @@ const state = {
   startingJob: false,
   job: null,
   result: null,
-  tab: "full_score",
+  tab: "lead_sheet",  // 오선 악보 화면의 악기별 악보 (없으면 renderScorePane 이 첫 탭으로)
   zoom: 1.0,
   osmd: null,
   pollTimer: null,
@@ -39,6 +39,9 @@ const state = {
   mute: new Set(),
   solo: new Set(),
   lastMeasure: -1,
+  keyPreset: "c",  // 악기에 맞춰 보기: c(콘서트) | bb | eb | f — 악보에 적는 키만 바뀐다
+  capo: 0,  // 기타 카포: 코드 이름을 그 카포에서 잡는 모양으로 보여 준다 (오선·소리는 그대로)
+  keyPrefsJob: null,
 };
 
 async function api(path, opts = {}) {
@@ -87,7 +90,7 @@ function selectJob(id) {
   state.jobId = id;
   state.job = null;
   state.result = null;
-  state.tab = "full_score";
+  state.tab = "lead_sheet";
   state.osmd = null;
   $("#sheet").replaceChildren();
   state.refreshing = null;
@@ -1402,7 +1405,268 @@ function renderHeader() {
   for (const k of minor ? MINOR_KEYS : MAJOR_KEYS) sel.add(new Option(keyName(k) + (k === v.original_key_short ? " (원래)" : ""), k));
   const cur = (minor ? MINOR_KEYS : MAJOR_KEYS).find((k) => PC[k.replace(/m$/, "")] === PC[v.key_short.replace(/m$/, "")]);
   sel.value = cur || v.key_short;
-  $("#t-info").textContent = v.semitones ? `원래 ${v.original_key} → ${v.key} (${v.semitones > 0 ? "+" : ""}${v.semitones} 반음)` : `원래 키 ${v.original_key}`;
+  renderKeyUI();
+  renderSource();
+}
+
+// ------------------------------------------------------------------ 키 바 (조옮김 · 악기 · 카포)
+// 키 바는 '콘서트 키'(실제 소리 = 재생·키 따라 듣기)를 보여 준다. 악기 프리셋은 악보에 적는 키만
+// 바꾼다: 서버에 보내는 반음 수(view.semitones) = 콘서트 반음 + 프리셋 이동. 카포는 코드 이름만.
+// 이 함수들은 프런트엔드 생명주기 테스트의 가짜 DOM 에서도 돌므로 $()·textContent·classList.toggle(이름, 참거짓)·
+// setAttribute·createElement/appendChild 만 쓴다.
+const KEY_LABELS = {
+  major: ["C", "D♭", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"],
+  minor: ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "G♯", "A", "B♭", "B"],
+};
+const KEY_PRESETS = [
+  { id: "c", name: "콘서트 C", sub: "피아노 · 기타 · 보컬", shift: 0 },
+  { id: "bb", name: "B♭ 악기", sub: "트럼펫 · 클라리넷 · 테너 색소폰", shift: 2 },
+  { id: "eb", name: "E♭ 악기", sub: "알토 색소폰", shift: 9 },
+  { id: "f", name: "F 악기", sub: "호른", shift: 7 },
+];
+const KEY_MIN = -5, KEY_MAX = 6, CAPO_MAX = 7;
+
+function signedSemis(n) {
+  return n > 0 ? `+${n}` : n < 0 ? `−${-n}` : "±0";
+}
+
+function keyPreset() {
+  return KEY_PRESETS.find((p) => p.id === state.keyPreset) || KEY_PRESETS[0];
+}
+
+function keyIsMinor() {
+  return !!state.view && String(state.view.original_key_short).endsWith("m");
+}
+
+// 원래 키에서 semis 반음 옮긴 키 이름 (D♭, F♯ …)
+function keyLabelAt(semis) {
+  const v = state.view;
+  const pc = PC[String(v.original_key_short).replace(/m$/, "")] || 0;
+  return KEY_LABELS[keyIsMinor() ? "minor" : "major"][(((pc + semis) % 12) + 12) % 12];
+}
+
+function keyFullAt(semis) {
+  return `${keyLabelAt(semis)} ${keyIsMinor() ? "minor" : "major"}`;
+}
+
+// 지금 듣는(콘서트) 키의 반음 수. 키 바는 −5…+6 안에서 보여 준다 (+8 은 같은 키인 −4 로)
+function concertSemis() {
+  const v = state.view;
+  if (!v) return 0;
+  const c = (v.semitones || 0) - keyPreset().shift;
+  return ((((c - KEY_MIN) % 12) + 12) % 12) + KEY_MIN;
+}
+
+function capoMessage() {
+  if (!state.capo) return "카포 없음";
+  if (keyPreset().shift) return `카포 ${state.capo} · 콘서트 C 보기에서 코드 모양으로 보여요`;
+  return `${keyLabelAt(concertSemis() - state.capo)} 코드 모양으로 연주`;
+}
+
+// 카포는 기타(콘서트 음높이) 이야기라 콘서트 C 보기에서만 코드 이름을 잡는 모양으로 바꾼다
+function syncViewsCapo() {
+  if (typeof Views.setCapo === "function") Views.setCapo(keyPreset().shift ? 0 : state.capo);
+}
+
+// 악기·카포는 작업마다 이 브라우저에 기억한다 (저장한 악보는 '적는 키'라 악기를 알아야 콘서트 키를 안다)
+const KEY_PREFS_STORE = "band2sheet.keyPrefs";
+
+function readKeyPrefs() {
+  try {
+    if (typeof localStorage === "undefined") return {};
+    return JSON.parse(localStorage.getItem(KEY_PREFS_STORE) || "{}") || {};
+  } catch (_) { return {}; }
+}
+
+function saveKeyPrefs() {
+  if (!state.job) return;
+  try {
+    if (typeof localStorage === "undefined") return;
+    const all = readKeyPrefs();
+    if (state.keyPreset === "c" && !state.capo) delete all[state.job.id];
+    else all[state.job.id] = { preset: state.keyPreset, capo: state.capo };
+    localStorage.setItem(KEY_PREFS_STORE, JSON.stringify(all));
+  } catch (_) { /* 저장 못 해도 화면은 그대로 */ }
+}
+
+// 작업이 바뀌면 그 작업의 악기·카포로 (없으면 콘서트 C · 카포 없음)
+function resetKeyPrefs() {
+  if (!state.job || state.keyPrefsJob === state.job.id) return;
+  state.keyPrefsJob = state.job.id;
+  const saved = readKeyPrefs()[state.job.id] || {};
+  state.keyPreset = KEY_PRESETS.some((p) => p.id === saved.preset) ? saved.preset : "c";
+  state.capo = Math.max(0, Math.min(CAPO_MAX, Number(saved.capo) || 0));
+  syncViewsCapo();
+}
+
+function setConcertKey(semis) {
+  const c = Math.max(KEY_MIN, Math.min(KEY_MAX, semis));
+  if (!state.view || c + keyPreset().shift === (state.view.semitones || 0)) return Promise.resolve();
+  return transpose({ semitones: c + keyPreset().shift });
+}
+
+function setKeyPreset(id) {
+  if (!state.view || id === state.keyPreset) return Promise.resolve();
+  const c = concertSemis();
+  const prev = state.keyPreset;
+  const want = c + (KEY_PRESETS.find((p) => p.id === id) || KEY_PRESETS[0]).shift;
+  state.keyPreset = id;
+  saveKeyPrefs();
+  syncViewsCapo();
+  renderKeyUI();
+  return transpose({ semitones: want }).then(() => {
+    // 조옮김이 취소·실패하면 악보는 그대로이므로 악기도 되돌린다
+    if (state.view && (state.view.semitones || 0) !== want && state.keyPreset === id) {
+      state.keyPreset = prev;
+      saveKeyPrefs();
+      syncViewsCapo();
+      renderKeyUI();
+    }
+  });
+}
+
+function setCapo(n) {
+  state.capo = Math.max(0, Math.min(CAPO_MAX, n));
+  saveKeyPrefs();
+  syncViewsCapo();
+  renderKeyUI();
+  if (state.pane === "score" && state.result) renderPaperHead(currentPartItem());
+}
+
+function keyChip(semis, cur, round) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = round ? "keychip round" : "keychip";
+  b.setAttribute("role", "radio");
+  b.setAttribute("aria-checked", String(semis === cur));
+  b.setAttribute("aria-label", `${keyFullAt(semis)}로 바꾸기${semis === 0 ? " (원래 키)" : ""}`);
+  if (semis === 0) b.classList.add("orig");
+  b.tabIndex = semis === cur ? 0 : -1;
+  b.dataset.semis = String(semis);
+  b.appendChild(textEl("b", keyLabelAt(semis)));
+  b.appendChild(textEl("small", semis === 0 ? "원래" : signedSemis(semis)));
+  b.addEventListener("click", () => setConcertKey(semis));
+  return b;
+}
+
+function textEl(tag, text) {
+  const el = document.createElement(tag);
+  el.textContent = text;
+  return el;
+}
+
+function presetButton(p, cur, card) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = card ? "preset-card" : "preset-pill";
+  b.setAttribute("aria-pressed", String(p.id === state.keyPreset));
+  b.dataset.pre = p.id;
+  const written = keyLabelAt(cur + p.shift);
+  b.appendChild(textEl("b", p.name));
+  b.appendChild(textEl(card ? "small" : "span", card ? `${written} ${keyIsMinor() ? "minor" : "major"}로 표시` : written));
+  b.title = `${p.sub} — ${written}${keyIsMinor() ? "m" : ""}로 적기`;
+  b.addEventListener("click", () => setKeyPreset(p.id));
+  return b;
+}
+
+function renderKeyUI() {
+  const v = state.view;
+  if (!v) return;
+  resetKeyPrefs();
+  const cur = concertSemis();
+  const changed = cur !== 0;
+  const orig = keyFullAt(0).replace(/ (major|minor)$/, keyIsMinor() ? "m" : "");
+  const off = changed ? `원래 ${orig} ${signedSemis(cur)}` : "원래 키";
+  $("#t-key-name").textContent = keyFullAt(cur);
+  $("#t-info").textContent = off;
+  $("#t-info").classList.toggle("changed", changed);
+  $("#t-down-name").textContent = keyLabelAt(cur - 1);
+  $("#t-up-name").textContent = keyLabelAt(cur + 1);
+  $("#t-down").disabled = cur <= KEY_MIN;
+  $("#t-up").disabled = cur >= KEY_MAX;
+  $("#t-down").setAttribute("aria-label", `반음 내리기: ${keyFullAt(cur - 1)}`);
+  $("#t-up").setAttribute("aria-label", `반음 올리기: ${keyFullAt(cur + 1)}`);
+  $("#t-reset").classList.toggle("hidden", !changed);
+  // 12개 키 (−5 … +6), 악기, 카포 — 넓은 화면의 「자세히」와 모바일 시트가 같은 값을 쓴다
+  for (const [box, round] of [["#keyrow", false], ["#ks-grid", true]]) {
+    const el = $(box);
+    el.innerHTML = "";
+    for (let s = KEY_MIN; s <= KEY_MAX; s++) el.appendChild(keyChip(s, cur, round));
+  }
+  for (const [box, card] of [["#presets", false], ["#ks-presets", true]]) {
+    const el = $(box);
+    el.innerHTML = "";
+    for (const p of KEY_PRESETS) el.appendChild(presetButton(p, cur, card));
+  }
+  for (const [val, down, up, msg] of [["#capo-val", "#capo-down", "#capo-up", "#capo-msg"],
+    ["#ks-capo-val", "#ks-capo-down", "#ks-capo-up", "#ks-capo-msg"]]) {
+    $(val).textContent = String(state.capo);
+    $(down).disabled = state.capo <= 0;
+    $(up).disabled = state.capo >= CAPO_MAX;
+    $(msg).textContent = capoMessage();
+  }
+  const p = keyPreset();
+  $("#preset-note").textContent = p.shift ? `${p.name}용 악보 · ${keyLabelAt(cur + p.shift)} ${keyIsMinor() ? "minor" : "major"}로 적혀 있어요` : "";
+  $("#preset-note").classList.toggle("hidden", !p.shift);
+  // 모바일 아래 독
+  $("#kd-key").textContent = keyFullAt(cur);
+  $("#kd-off").textContent = `${off} · 자세히`;
+  $("#kd-down-name").textContent = keyLabelAt(cur - 1);
+  $("#kd-up-name").textContent = keyLabelAt(cur + 1);
+  $("#kd-down").disabled = cur <= KEY_MIN;
+  $("#kd-up").disabled = cur >= KEY_MAX;
+  $("#ks-now").textContent = `지금 ${keyFullAt(cur)}`;
+}
+
+function toggleKeyPanel(open) {
+  const show = typeof open === "boolean" ? open : $("#keypanel").classList.contains("hidden");
+  $("#keypanel").classList.toggle("hidden", !show);
+  $("#t-more").setAttribute("aria-expanded", String(show));
+  $("#keybar").classList.toggle("open", show);
+}
+
+// 키 칩 줄(role=radiogroup): ←/→ 로 옮기며 바로 고른다
+function bindKeyRadios(box) {
+  box.addEventListener("keydown", (e) => {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    if (!step || !state.view) return;
+    e.preventDefault();
+    const next = Math.max(KEY_MIN, Math.min(KEY_MAX, concertSemis() + step));
+    setConcertKey(next).then(() => {
+      const chip = box.querySelector(`[data-semis="${next}"]`);
+      if (chip) chip.focus();
+    });
+  });
+}
+
+function openKeySheet() {
+  const dlg = $("#keysheet");
+  if (!dlg.open) dlg.showModal();
+}
+
+// ------------------------------------------------------------------ 이 작업을 만든 입력 + 다시 채보
+function jobSourceKind(job) {
+  if (job.url) return "link";
+  const ext = (String(job.filename).match(/\.[^.]+$/) || [""])[0].toLowerCase();
+  return SCORE_EXT.includes(ext) ? "score" : "audio";
+}
+
+function renderSource() {
+  const job = state.job;
+  if (!job) return;
+  const kind = jobSourceKind(job);
+  $("#r-src-kind").textContent = { link: "링크", audio: "음원 파일", score: "악보 파일" }[kind];
+  $("#r-src-value").textContent = job.url || job.filename || "";
+  $("#r-quality-group").classList.toggle("hidden", kind === "score");  // 악보 파일은 분리하지 않는다
+  const q = state.rerunQuality && state.rerunQuality.job === job.id ? state.rerunQuality.v : ((job.options || {}).quality || "standard");
+  $$("#r-quality button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.v === q);
+    b.setAttribute("aria-pressed", String(b.dataset.v === q));
+  });
+  const pending = state.analysisJobs.has(job.id);
+  $("#r-rerun").disabled = pending || kind === "score" || q === ((job.options || {}).quality || "standard");
+  $("#r-rerun").setAttribute("aria-busy", String(pending));
+  $("#r-rerun").textContent = pending ? "다시 채보 시작하는 중…" : "다시 채보";
 }
 
 function scoreStale() {
@@ -1499,32 +1763,156 @@ function switchView(name) {
   Views.shown(name);
 }
 
+// 악기별 악보 탭의 짧은 이름 (디자인: 리드시트 · 총보 · 보컬 · 코러스 · 기타 · 베이스 · 피아노 · 드럼)
+const PART_TAB_LABELS = { vocals: "보컬", backing_vocals: "코러스", guitar: "기타", bass: "베이스", piano: "피아노",
+  other: "건반·신스", drums: "드럼" };
+
 function renderScorePane() {
   const r = state.result;
   const tabs = $("#tabs");
   tabs.innerHTML = "";
-  const items = [{ id: "full_score", label: "총보" }];
+  const items = [];
   if (r.files.includes("lead_sheet.musicxml")) items.push({ id: "lead_sheet", label: "리드시트" });
+  items.push({ id: "full_score", label: "총보" });
   for (const p of r.parts) {
     let badge = "";
     if (p.tab) badge = "TAB";
     else if (p.pedals) badge = "페달";
     else if (p.name === "drums" && p.pieces) badge = `${p.pieces.length}조각`;
-    items.push({ id: p.name, label: p.label_ko, badge });
+    items.push({ id: p.name, label: PART_TAB_LABELS[p.name] || p.label_ko, badge, stem: p.name });
   }
-  if (!items.find((i) => i.id === state.tab)) state.tab = "full_score";
+  if (!items.find((i) => i.id === state.tab)) state.tab = items[0].id;  // 처음에는 리드시트
   for (const it of items) {
     const b = document.createElement("button");
     b.type = "button";
+    b.className = "part-tab";
     b.innerHTML = `<span></span>${it.badge ? ` <span class="badge">${it.badge}</span>` : ""}`;
     b.firstChild.textContent = it.label;
     b.classList.toggle("on", it.id === state.tab);
     b.setAttribute("aria-pressed", String(it.id === state.tab));
     b.addEventListener("click", () => { state.tab = it.id; renderScorePane(); });
     tabs.appendChild(b);
+    // 그 악기 소리만 듣기 (분리 음원이 있는 파트)
+    if (it.stem && state.audios[it.stem]) {
+      const h = document.createElement("button");
+      h.type = "button";
+      h.className = "part-solo";
+      const on = state.solo.size === 1 && state.solo.has(it.stem);
+      h.classList.toggle("on", on);
+      h.setAttribute("aria-pressed", String(on));
+      h.setAttribute("aria-label", `${it.label}만 듣기`);
+      h.title = `${it.label}만 듣기`;
+      h.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 14v-2a9 9 0 0 1 18 0v2"/><path d="M21 15a2 2 0 0 1-2 2h-1a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3zM3 15a2 2 0 0 0 2 2h1a1 1 0 0 0 1-1v-4a1 1 0 0 0-1-1H3z"/></svg>';
+      h.addEventListener("click", () => soloStem(it.stem));
+      tabs.appendChild(h);
+    }
   }
+  renderPaperHead(items.find((i) => i.id === state.tab));
   showPartInfo();
   loadSheet();
+}
+
+function currentPartItem() {
+  const label = state.tab === "lead_sheet" ? "리드시트" : state.tab === "full_score" ? "총보" : (PART_TAB_LABELS[state.tab] || state.tab);
+  return { id: state.tab, label };
+}
+
+// 헤드폰 버튼: 그 악기만 듣기 ↔ 전체로 되돌리기
+function soloStem(stem) {
+  const on = state.solo.size === 1 && state.solo.has(stem);
+  if (on) { setPreset("all"); } else {
+    setPreset(null);
+    state.mute.clear(); state.solo.clear(); state.solo.add(stem);
+    applyMix();
+    const m = masterAudio();
+    if (m && m.paused) togglePlay();
+  }
+  if (state.pane === "score" && state.result) {
+    $$("#tabs .part-solo").forEach((b) => b.classList.remove("on"));
+    renderScorePane();
+  }
+}
+
+// A4 종이 머리: 파트 배지, 제목, 키·템포, 출처
+function renderPaperHead(item) {
+  const v = state.view, job = state.job;
+  if (!v || !job) return;
+  $("#paper-part").textContent = item ? item.label : "";
+  $("#paper-title").textContent = job.title || v.title || "";
+  const capo = state.capo && !keyPreset().shift ? ` · Capo ${state.capo}` : "";
+  $("#paper-key").textContent = `Key ${v.key_short}${capo} · ${v.time_signature}`;  // 템포는 악보 안에 적힌다
+  const p = keyPreset();
+  $("#paper-sub").textContent = p.shift ? `${p.name}용 · 소리는 ${keyFullAt(concertSemis())}` : "";
+  $("#paper-credit").textContent = "band2sheet 자동 채보";
+}
+
+// 지금 키·지금 고른 파트의 PDF (오선 악보를 보고 있지 않으면 리드시트, 없으면 총보)
+function pdfPart(r) {
+  if (state.pane === "score" && state.tab && r.files.includes(`${state.tab}.musicxml`)) return state.tab;
+  return r.files.includes("lead_sheet.musicxml") ? "lead_sheet" : "full_score";
+}
+
+function downloadName(res, fallback) {
+  const cd = res.headers.get("content-disposition") || "";
+  const star = cd.match(/filename\*=UTF-8''([^;]+)/i);
+  if (star) { try { return decodeURIComponent(star[1]); } catch (_) { /* 그대로 */ } }
+  const plain = cd.match(/filename="([^"]+)"/i);
+  return plain ? plain[1] : fallback;
+}
+
+async function savePdf() {
+  const context = jobContext();
+  if (!state.job || state.job.id !== context.id || state.pdfBusy) return;
+  const btn = $("#r-pdf");
+  const label = btn.querySelector("span");
+  state.pdfBusy = true;
+  btn.disabled = true;
+  btn.setAttribute("aria-busy", "true");
+  label.textContent = "PDF 만드는 중…";
+  $("#r-pdf-error").textContent = "";
+  try {
+    if (scoreStale()) await refreshScore();  // 지금 키로 악보를 먼저 만든다
+    if (!isCurrentJob(context)) return;
+    const r = state.result;
+    if (!r || scoreStale()) throw new Error("지금 키의 악보를 만드는 중이에요. 잠시 뒤 다시 눌러 주세요.");
+    const part = pdfPart(r);
+    const res = await fetch(`/api/jobs/${context.id}/pdf/${r.sheet_dir}/${part}`);
+    if (!res.ok) {
+      let msg = res.statusText;
+      try { msg = (await res.json()).detail || msg; } catch (_) { /* 본문 없음 */ }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    if (!isCurrentJob(context)) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = downloadName(res, `${state.job.title}_${part}.pdf`);
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { a.remove(); URL.revokeObjectURL(a.href); }, 60000);  // 바로 지우면 파일 이름을 잃는 브라우저가 있다
+    toast("PDF 를 저장했어요");
+  } catch (e) {
+    if (isCurrentJob(context)) $("#r-pdf-error").textContent = `PDF 를 만들지 못했습니다: ${e.message}`;
+  } finally {
+    state.pdfBusy = false;
+    btn.disabled = false;
+    btn.setAttribute("aria-busy", "false");
+    label.textContent = "PDF 저장";
+  }
+}
+
+const QUALITY_NAMES = { fast: "빠름", standard: "표준", high: "고품질" };
+
+// 소스 줄의 「다시 채보」: 고른 악기 분리 품질로 처음부터 다시 분석
+async function rerunWithQuality() {
+  const job = state.job;
+  if (!job || !state.rerunQuality || state.rerunQuality.job !== job.id) return;
+  const q = state.rerunQuality.v;
+  if (!confirm(`악기 분리를 「${QUALITY_NAMES[q]}」(으)로 바꿔 다시 채보할까요?\n직접 고친 코드·가사·음표는 새 결과로 바뀌어요 (이전 결과는 백업으로 남겨 둬요).`)) return;
+  const pending = reanalyzeJob({ quality: q });
+  renderSource();
+  if (await pending) state.rerunQuality = null;
+  renderSource();
 }
 
 const FILE_GROUPS = [
@@ -1653,6 +2041,9 @@ async function loadSheet() {
       newPageFromXML: false,
       autoGenerateMultipleRestMeasuresFromRestMeasures: true, // 쉬는 마디는 여러 마디 쉼표로
       drawPartAbbreviations: true, stretchLastSystemLine: false,
+      drawPartNames: part === "full_score",  // 한 파트 악보는 종이 왼쪽 위 배지로 이름을 보인다
+      drawMeasureNumbersOnlyAtSystemStart: true,
+      defaultColorMusic: "#1d1a17",
     });
     const R = osmd.EngravingRules;
     R.ChordSymbolTextHeight = 2.3; // 코드 이름 크게
@@ -1666,6 +2057,11 @@ async function loadSheet() {
     R.TabBeamsRendered = false; // TAB 위에 리듬(빔)을 또 그리지 않는다 — 리듬은 위 오선보에
     R.VoiceSpacingMultiplierVexflow = 0.75; // 조금 촘촘하게 (기본 0.85 / 3)
     R.VoiceSpacingAddendVexflow = 2.5;
+    R.FlatBeams = true;  // 리드시트처럼 평평한 빔
+    if (typeof R.resetChordAccidentalTexts === "function" && R.ChordAccidentalTexts) {
+      R.resetChordAccidentalTexts(R.ChordAccidentalTexts, true);  // 코드 이름의 # b -> ♯ ♭
+      if (typeof R.resetChordNames === "function") { R.CustomChords = []; R.resetChordNames(); }
+    }
     await osmd.load(xml);
     if (!current()) return;
     $("#sheet").replaceChildren(container);
@@ -1690,9 +2086,33 @@ async function transpose(body) {
 
 function initResultView() {
   $("#t-key").addEventListener("change", (e) => transpose({ target_key: e.target.value }));
-  $("#t-up").addEventListener("click", () => transpose({ semitones: (state.view.semitones || 0) + 1 }));
-  $("#t-down").addEventListener("click", () => transpose({ semitones: (state.view.semitones || 0) - 1 }));
-  $("#t-reset").addEventListener("click", () => transpose({ semitones: 0 }));
+  $("#t-up").addEventListener("click", () => setConcertKey(concertSemis() + 1));
+  $("#t-down").addEventListener("click", () => setConcertKey(concertSemis() - 1));
+  $("#t-reset").addEventListener("click", () => setConcertKey(0));
+  $("#t-more").addEventListener("click", () => toggleKeyPanel());
+  bindKeyRadios($("#keyrow"));
+  bindKeyRadios($("#ks-grid"));
+  for (const [down, up] of [["#capo-down", "#capo-up"], ["#ks-capo-down", "#ks-capo-up"]]) {
+    $(down).addEventListener("click", () => setCapo(state.capo - 1));
+    $(up).addEventListener("click", () => setCapo(state.capo + 1));
+  }
+  $("#kd-up").addEventListener("click", () => setConcertKey(concertSemis() + 1));
+  $("#kd-down").addEventListener("click", () => setConcertKey(concertSemis() - 1));
+  $("#kd-open").addEventListener("click", openKeySheet);
+  $("#keysheet").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });  // 바깥(배경) 누르면 닫기
+  $("#r-settings").addEventListener("click", () => openSettings("reanalyze"));
+  $("#r-pdf").addEventListener("click", savePdf);
+  $("#r-back").addEventListener("click", () => newJob());
+  $$("#r-quality button").forEach((b) => b.addEventListener("click", () => {
+    if (!state.job) return;
+    state.rerunQuality = { job: state.job.id, v: b.dataset.v };
+    renderSource();
+  }));
+  $("#r-rerun").addEventListener("click", rerunWithQuality);
+  if (window.innerWidth && window.innerWidth < 600) {  // 휴대폰: 한 줄에 두 마디 이상 들어가게
+    state.zoom = 0.7;
+    $("#z-val").textContent = "70%";
+  }
   $("#z-in").addEventListener("click", () => setZoom(state.zoom + 0.1));
   $("#z-out").addEventListener("click", () => setZoom(state.zoom - 0.1));
   $$("#viewtabs button").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
@@ -1739,6 +2159,22 @@ function lonelyBars(osmd) {
   return n;
 }
 
+// 코드 이름 글자에 class 를 붙인다 (CSS 로 굵게 — OSMD 는 코드 글자에 class 를 주지 않음)
+function tagChordLabels(osmd) {
+  try {
+    for (const ms of osmd.GraphicSheet.MeasureList || []) {
+      for (const m of ms || []) {
+        for (const se of (m && m.staffEntries) || []) {
+          for (const c of se.graphicalChordContainers || []) {
+            const node = c.GraphicalLabel && c.GraphicalLabel.SVGNode;
+            if (node && node.classList) node.classList.add("chord");
+          }
+        }
+      }
+    }
+  } catch (_) { /* 꾸밈일 뿐 — 실패해도 악보는 그대로 */ }
+}
+
 function drawSheet() {
   const osmd = state.osmd;
   let fit = 1;
@@ -1754,6 +2190,7 @@ function drawSheet() {
     console.warn("auto-fit", e);
   }
   $("#z-val").textContent = `${Math.round(state.zoom * 100)}%` + (fit < 1 ? ` (맞춤 ${Math.round(state.zoom * fit * 100)}%)` : "");
+  tagChordLabels(osmd);
 }
 
 // 창 크기가 바뀌면 오선 악보가 보일 때만 다시 그린다 (숨겨진 상태에서 그리면 폭이 0)
@@ -1971,6 +2408,7 @@ function applyMix() {
     }
     const vol = row.querySelector("input").value / 100;
     const audible = state.solo.size ? state.solo.has(name) : !state.mute.has(name);
+    row.dataset.audible = String(audible);  // 들리지 않는 줄은 흐리게
     const v = audible ? vol * vol : 0;  // 귀에 고르게 들리도록 제곱 곡선
     const g = state.gains[name];
     if (g) g.gain.setTargetAtTime(v, now, 0.03);
@@ -2018,7 +2456,7 @@ function syncStems(master) {
 // ------------------------------------------------------------------ 조옮김한 키로 듣기
 async function syncPlaybackKey() {
   if (!state.view || !Object.keys(state.audios).length) return;
-  const want = $("#m-keyfollow").checked ? (state.view.semitones || 0) : 0;
+  const want = $("#m-keyfollow").checked ? concertSemis() : 0;  // 소리는 콘서트 키 (악기 프리셋과 무관)
   updateDownloads();
   if (want === (state.playKey || 0)) { $("#pb-status").classList.add("hidden"); return; }
   const token = (state.pbToken = (state.pbToken || 0) + 1);
@@ -2044,8 +2482,7 @@ async function syncPlaybackKey() {
 }
 
 function keyLabel(semis) {
-  const v = state.view;
-  return semis === v.semitones ? v.key_short : (semis ? `${semis > 0 ? "+" : ""}${semis}` : v.original_key_short);
+  return keyLabelAt(semis).replace("♭", "b").replace("♯", "#") + (keyIsMinor() ? "m" : "");
 }
 
 function swapSources(semis) {
@@ -2076,7 +2513,7 @@ function swapSources(semis) {
 async function downloadMr(e) {
   e.preventDefault();
   const kind = e.currentTarget.id === "dl-inst" ? "inst" : "mr";
-  const semis = $("#m-keyfollow").checked && state.view ? (state.view.semitones || 0) : 0;
+  const semis = $("#m-keyfollow").checked && state.view ? concertSemis() : 0;
   try {
     let st = await api(`/api/jobs/${state.job.id}/playback?semitones=${semis}`);
     if (st.status !== "ready" || !st.tracks.includes(kind)) {
@@ -2101,7 +2538,7 @@ function refreshScoreAudio() {
 }
 
 function updateDownloads() {
-  const semis = $("#m-keyfollow").checked && state.view ? (state.view.semitones || 0) : 0;
+  const semis = $("#m-keyfollow").checked && state.view ? concertSemis() : 0;
   const stems = (state.result && state.result.stems) || [];
   const base = `/api/jobs/${state.job.id}/mr?semitones=${semis}`;
   $("#dl-mr").href = `${base}&kind=mr`;

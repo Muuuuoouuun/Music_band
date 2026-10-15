@@ -12,7 +12,8 @@ const Views = (() => {
     fontScale: 1,
     edit: false,
     nowBar: -1,
-    capo: false,
+    capo: false,  // 라이브 화면의 「추천 카포 모양으로 보기」
+    capoFret: 0,  // 키 바에서 고른 카포 (0 = 없음): 코드 이름을 잡는 모양으로
     roll: { track: null, pxPerSec: 80, scroll: 0, sel: null, dirty: false, undo: [], drag: null, follow: true },
     hooks: { seek: () => {}, time: () => 0, playing: () => false, reload: () => {}, toast: () => {} },
   };
@@ -150,7 +151,8 @@ const Views = (() => {
     if (!v) return;
     $$q("#cs-mode button").forEach((b) => b.classList.toggle("on", (b.dataset.v === "numbers") === ctx.numbers));
     const head = [`<b>Key ${esc(v.key_short)}</b>`, `${Math.round(v.tempo)} BPM`, esc(v.time_signature)];
-    if (v.capo) head.push(`기타 카포 ${v.capo.fret} (${esc(v.capo.shape)} 모양)`);
+    if (ctx.capoFret) head.push(`<span class="cs-capo">카포 ${ctx.capoFret} · 잡는 모양으로 표시</span>`);
+    else if (v.capo) head.push(`기타 카포 ${v.capo.fret} (${esc(v.capo.shape)} 모양)`);
     for (const k of v.key_changes) head.push(`<span class="cs-mod">${k.number}마디부터 ${esc(k.key_short)}</span>`);
     let html = `<div class="cs-title">${esc(v.title)}</div><div class="cs-head">${head.join(" · ")}</div>`;
     if (v.sections.length > 1) {
@@ -167,7 +169,7 @@ const Views = (() => {
         const b = v.bars[i];
         const chords = b.chords.map((c) => {
           const left = (c.beat / v.beats_per_bar) * 100;
-          const text = ctx.numbers ? c.number : c.name;
+          const text = chordLabel(c);
           return `<span class="cs-chord${c.held ? " held" : ""}" style="left:${left}%" data-beat="${c.beat}">${esc(text)}</span>`;
         }).join("");
         html += `<div class="cs-bar${b.index === ctx.nowBar ? " now" : ""}" data-bar="${b.index}">
@@ -372,21 +374,43 @@ const Views = (() => {
   }
 
   // ------------------------------------------------------------ 2) 라이브 코드
+  // 지금 쓰는 카포: 키 바에서 고른 것이 먼저, 없으면 라이브 화면의 추천 카포
+  function capoFret() {
+    if (ctx.capoFret) return ctx.capoFret;
+    return ctx.capo && ctx.view && ctx.view.capo ? ctx.view.capo.fret : 0;
+  }
+
   function shapeChord(c) {
     if (!c || c.root == null) return null;
-    const capo = ctx.capo && ctx.view.capo ? ctx.view.capo.fret : 0;
+    const capo = capoFret();
     return { root: (c.root - capo + 12) % 12, quality: c.quality, bass: c.bass == null ? null : (c.bass - capo + 12) % 12 };
+  }
+
+  // 화면에 적을 코드 이름: 넘버 · 카포 모양 · 그대로
+  function chordLabel(c) {
+    if (ctx.numbers) return c.number;
+    if (!ctx.capoFret || c.root == null || typeof ChordGfx === "undefined") return c.name;
+    const s = shapeChord(c);
+    return ChordGfx.name(s.root, s.quality) + (s.bass != null && s.bass !== s.root ? "/" + ChordGfx.NAMES[s.bass] : "");
+  }
+
+  function setCapo(n) {
+    ctx.capoFret = Math.max(0, Math.min(12, Number(n) || 0));
+    if (!ctx.view) return;
+    renderChordSheet();
+    if (!$("#v-live") || !$("#v-live").classList.contains("hidden")) renderLive(true);
   }
 
   function chordCard(c, big) {
     if (!c) return `<div class="live-card empty">—</div>`;
     const s = shapeChord(c);
-    const label = ctx.numbers ? c.number : c.name;
+    const label = chordLabel(c);
     const shapeName = s ? ChordGfx.name(s.root, s.quality) + (s.bass != null && s.bass !== s.root ? "/" + ChordGfx.NAMES[s.bass] : "") : "";
     const gtr = s ? ChordGfx.guitarSVG(ChordGfx.guitar(s.root, s.quality), big ? { width: 130, height: 150 } : {}) : "";
     return `<div class="live-card${big ? " big" : ""}">
       <div class="live-name">${esc(label)}</div>
-      ${ctx.capo && ctx.view.capo && s ? `<div class="live-shape">카포 ${ctx.view.capo.fret} · ${esc(shapeName)} 모양</div>` : ""}
+      ${capoFret() && s && !ctx.capoFret ? `<div class="live-shape">카포 ${capoFret()} · ${esc(shapeName)} 모양</div>` : ""}
+      ${ctx.capoFret && s ? `<div class="live-shape">카포 ${ctx.capoFret} · 소리는 ${esc(c.name)}</div>` : ""}
       <div class="live-gtr">${gtr}</div>
     </div>`;
   }
@@ -417,7 +441,7 @@ const Views = (() => {
     // 전체 진행 (누르면 이동)
     const strip = $("#live-strip");
     if (force || !strip.childElementCount) {
-      strip.innerHTML = tl.map((c, i) => `<button data-i="${i}">${esc(ctx.numbers ? c.number : c.name)}<small>${v.bars[c.bar].number}</small></button>`).join("");
+      strip.innerHTML = tl.map((c, i) => `<button data-i="${i}">${esc(chordLabel(c))}<small>${v.bars[c.bar].number}</small></button>`).join("");
       strip.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => ctx.hooks.seek(tl[Number(b.dataset.i)].t, true)));
     }
     strip.querySelectorAll("button.now").forEach((b) => b.classList.remove("now"));
@@ -914,5 +938,5 @@ const Views = (() => {
     return cur;
   }
 
-  return { init, setData, tick, shown, hasUnsaved, getEditRevision, discardUnsaved, chordAt, ctx };
+  return { init, setData, tick, shown, hasUnsaved, getEditRevision, discardUnsaved, chordAt, setCapo, ctx };
 })();
