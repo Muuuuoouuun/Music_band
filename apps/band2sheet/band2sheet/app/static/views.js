@@ -234,47 +234,141 @@ const Views = (() => {
     }
   }
 
-  // ---- 코드 고치기
-  function diatonic() {
+  // ---- 코드 고치기 (팝오버: 박 · 코드 · 키 안의 코드(도수) · 변형 · 베이스음 · 가사)
+  const KEY_PC = { C: 0, "C#": 1, Db: 1, D: 2, "D#": 3, Eb: 3, E: 4, F: 5, "F#": 6, Gb: 6, G: 7, "G#": 8, Ab: 8, A: 9, "A#": 10, Bb: 10, B: 11 };
+
+  // 이 마디에서 쓰는 키 (곡 중간 전조가 있으면 그 뒤로는 바뀐 키)
+  function keyAt(bar) {
     const v = ctx.view;
-    const k = v.key_short;
-    const minor = k.endsWith("m");
-    const tonic = { C: 0, "C#": 1, Db: 1, D: 2, "D#": 3, Eb: 3, E: 4, F: 5, "F#": 6, Gb: 6, G: 7, "G#": 8, Ab: 8, A: 9, "A#": 10, Bb: 10, B: 11 }[k.replace(/m$/, "")];
-    const steps = minor ? [[0, "m"], [3, ""], [5, "m"], [7, "m"], [7, ""], [8, ""], [10, ""]]
-      : [[0, ""], [2, "m"], [4, "m"], [5, ""], [7, ""], [9, "m"], [7, "7"]];
-    const flats = /b|F$|Dm|Gm|Cm|Fm/.test(k);
-    const names = flats ? ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"] : NOTE.map((n) => n.replace("Eb", "D#").replace("Ab", "G#").replace("Bb", "A#"));
-    return steps.map(([s, q]) => names[(tonic + s) % 12] + q);
+    let k = v.key_short;
+    for (const kc of v.key_changes || []) {
+      const at = v.bars.findIndex((b) => b.number === kc.number);
+      if (at >= 0 && at <= bar && kc.key_short) k = kc.key_short;
+    }
+    return k;
   }
 
-  function openChordPop(row, bar, e) {
+  function spellNames(k) {
+    const flats = /b|F$|Dm|Gm|Cm|Fm/.test(k);
+    return flats ? ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+      : NOTE.map((n) => n.replace("Eb", "D#").replace("Ab", "G#").replace("Bb", "A#"));
+  }
+
+  // 키 안의 코드와 도수: 장조 I ii iii IV V vi V7 / 단조 i III iv v V VI VII
+  function diatonic(bar = 0) {
+    const k = keyAt(bar);
+    const minor = k.endsWith("m");
+    const tonic = KEY_PC[k.replace(/m$/, "")];
+    const steps = minor ? [[0, "m", "i"], [3, "", "III"], [5, "m", "iv"], [7, "m", "v"], [7, "", "V"], [8, "", "VI"], [10, "", "VII"]]
+      : [[0, "", "I"], [2, "m", "ii"], [4, "m", "iii"], [5, "", "IV"], [7, "", "V"], [9, "m", "vi"], [7, "7", "V7"]];
+    const names = spellNames(k);
+    return steps.map(([st, q, deg]) => ({ name: names[(tonic + st) % 12] + q, degree: deg }));
+  }
+
+  const MODS = ["7", "maj7", "m7", "sus4", "add9"];
+
+  // 코드 이름 -> {root(대문자), minor}. 해석할 수 없으면 null
+  function parseChord(name) {
+    const m = /^([A-Ga-g])([#b]?)(.*)$/.exec(String(name || "").split("/")[0].trim());
+    if (!m) return null;
+    const rest = m[3];
+    return { root: m[1].toUpperCase() + m[2], rest, minor: /^m(?!aj)/.test(rest) };
+  }
+
+  // 변형 칩: 성질은 바꾸고(쌓지 않음) 베이스음은 뗀다. 슬래시 칩은 성질은 두고 베이스음만 바꾼다
+  function applyMod(name, mod, bar) {
+    const c = parseChord(name);
+    if (!c) return name;
+    if (mod.startsWith("/")) return String(name).split("/")[0].trim() + mod;
+    return c.root + mod;
+  }
+
+  // 슬래시 칩: 지금 코드의 3음을 베이스로 (C -> /E, Am -> /C)
+  function slashBass(name, bar) {
+    const c = parseChord(name);
+    if (!c || KEY_PC[c.root] === undefined) return null;
+    return "/" + spellNames(keyAt(bar))[(KEY_PC[c.root] + (c.minor ? 3 : 4)) % 12];
+  }
+
+  function openChordPop(row, bar, e, beatAt) {
     const v = ctx.view;
     const rect = row.getBoundingClientRect();
     const clientX = e ? e.clientX : rect.left;
     const rel = Math.min(0.999, Math.max(0, (clientX - rect.left) / rect.width));
-    const beat = Math.floor(rel * v.beats_per_bar);
-    const current = [...v.bars[bar].chords].reverse().find((c) => c.beat <= beat);
+    let beat = beatAt !== undefined ? beatAt : Math.floor(rel * v.beats_per_bar);
+    const chordAtBeat = (b) => [...v.bars[bar].chords].reverse().find((c) => c.beat <= b);
+    const current = chordAtBeat(beat);
     const pop = $("#chord-pop");
     const session = chordPopup = { ...viewContext(), row, bar, saving: false };
+    const lyric0 = v.bars[bar].lyrics || "";
+    const last = v.bars.length - 1;
     pop.setAttribute("role", "dialog");
     pop.setAttribute("aria-labelledby", "pop-title");
     pop.setAttribute("aria-describedby", "pop-help");
     pop.setAttribute("aria-busy", "false");
-    pop.innerHTML = `<div class="pop-head" id="pop-title">${v.bars[bar].number}마디 ${beat + 1}박부터 코드 편집</div>
-      <p id="pop-help" class="small muted">코드를 입력하거나 아래에서 선택하세요. Escape로 닫을 수 있어요.</p>
-      <label for="pop-input">코드 이름</label>
-      <input id="pop-input" aria-describedby="pop-err" value="${esc(current && !current.held ? current.name : "")}" placeholder="예: G, Em7, D/F#">
-      <div class="pop-quick">${diatonic().map((n) => `<button data-n="${esc(n)}">${esc(n)}</button>`).join("")}</div>
-      <div class="pop-actions"><button class="primary" id="pop-ok">적용</button><button id="pop-del">코드 지우기</button><button id="pop-cancel" class="ghost">취소</button></div>
+    const beats = Array.from({ length: v.beats_per_bar }, (_, i) =>
+      `<button type="button" role="radio" data-beat="${i}" aria-checked="${i === beat}">${i + 1}박</button>`).join("");
+    pop.innerHTML = `<div class="pop-head"><div class="pop-title" id="pop-title">${v.bars[bar].number}마디 ${beat + 1}박부터 코드 편집</div>
+      <div class="pop-nav"><button type="button" id="pop-prev" class="pop-icon" aria-label="이전 마디" title="이전 마디"${bar <= 0 ? " disabled" : ""}>‹</button><button type="button" id="pop-next" class="pop-icon" aria-label="다음 마디" title="다음 마디"${bar >= last ? " disabled" : ""}>›</button><button type="button" id="pop-cancel" class="pop-icon" aria-label="닫기" title="닫기">×</button></div></div>
+      <div class="pop-beats" role="radiogroup" aria-label="코드를 바꿀 박">${beats}</div>
+      <label for="pop-input" class="sr-only">코드 이름</label>
+      <input id="pop-input" class="pop-input" aria-describedby="pop-err" autocomplete="off" spellcheck="false" value="${esc(current && !current.held ? current.name : "")}" placeholder="예: C, Am7, G/B">
+      <div class="pop-quick" aria-label="이 키의 코드">${diatonic(bar).map((d) => `<button type="button" data-n="${esc(d.name)}" aria-pressed="false">${esc(d.name)}<small>${esc(d.degree)}</small></button>`).join("")}</div>
+      <div class="pop-mods" aria-label="코드 바꾸기">${MODS.map((m) => `<button type="button" data-mod="${m}">${m}</button>`).join("")}<button type="button" data-mod="slash" id="pop-slash"></button></div>
+      <label for="pop-lyric" class="pop-label">가사</label>
+      <input id="pop-lyric" class="pop-input lyric" autocomplete="off" value="${esc(lyric0)}" placeholder="이 마디 가사">
+      <div class="pop-actions"><button type="button" class="primary" id="pop-ok">적용</button><button type="button" class="primary pop-ok-next" id="pop-ok-next">적용하고 다음 마디</button><button type="button" id="pop-del">코드 지우기</button><span class="pop-keys" id="pop-help">Enter 적용 · Escape 닫기 · Tab 다음 마디</span></div>
       <p class="error small" id="pop-err" role="alert" aria-atomic="true"></p>`;
     pop.classList.remove("hidden");
+    // 마디 아래에 두고, 아래 공간이 모자라면 위로 (좁은 화면에서는 CSS 가 아래 시트로 바꾼다)
     const pr = pop.getBoundingClientRect();
+    const below = rect.bottom + 6;
+    const top = below + pr.height + 10 <= window.innerHeight ? below : Math.max(10, rect.top - pr.height - 6);
     pop.style.left = `${Math.min(window.innerWidth - pr.width - 10, Math.max(10, clientX - 40))}px`;
-    pop.style.top = `${Math.min(window.innerHeight - pr.height - 10, rect.bottom + 6)}px`;
+    pop.style.top = `${Math.min(window.innerHeight - pr.height - 10, top)}px`;
     const input = $("#pop-input");
+    const lyric = $("#pop-lyric");
+    const typed = { chord: false };
+    const paintChips = () => {
+      pop.querySelectorAll(".pop-quick button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.n === input.value.trim())));
+      const slash = slashBass(input.value, bar);
+      const sb = $("#pop-slash");
+      if (sb) { sb.textContent = slash || "/베이스"; sb.disabled = !slash; sb.dataset.bass = slash || ""; }
+    };
+    const setBeat = (b) => {
+      beat = b;
+      pop.querySelectorAll(".pop-beats button").forEach((x) => x.setAttribute("aria-checked", String(Number(x.dataset.beat) === b)));
+      $("#pop-title").textContent = `${v.bars[bar].number}마디 ${b + 1}박부터 코드 편집`;
+      if (!typed.chord) {  // 아직 고치지 않았으면 그 박의 코드로 채운다
+        const c = chordAtBeat(b);
+        input.value = c && !c.held ? c.name : "";
+      }
+      paintChips();
+    };
+    paintChips();
     input.focus();
     input.select();
-    const submit = async (name) => {
+    const saveLyric = async (text) => {
+      const queueKey = JSON.stringify([session.jobId, bar]);
+      const request = {};
+      lyricSaves.set(bar, request);
+      const current = () => currentView(session) && lyricSaves.get(bar) === request;
+      const previous = lyricQueues.get(queueKey);
+      const write = (async () => {
+        if (previous) { try { await previous; } catch (_) { /* 앞선 저장이 실패해도 이어서 */ } }
+        if (!current()) return false;
+        await ctx.hooks.api(`/api/jobs/${session.jobId}/lyrics`, {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bar, text }),
+        });
+        return true;
+      })();
+      lyricQueues.set(queueKey, write);
+      try {
+        if (await write && current()) v.bars[bar].lyrics = text;
+      } finally { if (lyricQueues.get(queueKey) === write) lyricQueues.delete(queueKey); }
+    };
+    // 적용: 코드(박부터)와 바뀐 가사를 저장. then = 저장 뒤 열 마디(앞뒤 마디로 넘어가기)
+    const submit = async (name, then) => {
       if (session !== chordPopup || !currentView(session) || session.saving) return;
       session.saving = true;
       const error = $("#pop-err");
@@ -283,6 +377,7 @@ const Views = (() => {
       $("#pop-ok").textContent = "저장 중…";
       const queueKey = JSON.stringify([session.jobId, bar]);
       const previous = chordQueues.get(queueKey);
+      const text = lyric.value.trim();
       const write = (async () => {
         if (previous) { try { await previous; } catch (_) { /* allow the next edit to retry */ } }
         if (session !== chordPopup || !currentView(session)) return false;
@@ -290,13 +385,19 @@ const Views = (() => {
           method: "PUT", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ bar, beat, name, semitones: v.semitones }),
         });
+        if (text !== lyric0.trim()) await saveLyric(text);
         return true;
       })();
       chordQueues.set(queueKey, write);
       try {
         if (!await write || session !== chordPopup || !currentView(session)) return;
-        closePop();
-        ctx.hooks.reload();
+        closePop(then === undefined);
+        if (text !== lyric0.trim()) ctx.hooks.markStale();
+        const reloaded = ctx.hooks.reload();
+        if (then !== undefined) {
+          await reloaded;
+          reopenAt(then);
+        }
       } catch (err) {
         if (session === chordPopup && currentView(session)) error.textContent = err.message;
       } finally {
@@ -308,11 +409,62 @@ const Views = (() => {
         }
       }
     };
-    pop.querySelectorAll(".pop-quick button").forEach((b) => b.addEventListener("click", () => submit(b.dataset.n)));
+    // 옆 마디로: 고친 것이 있으면 먼저 저장
+    const dirty = () => typed.chord || lyric.value.trim() !== lyric0.trim();
+    const go = (delta) => {
+      const to = bar + delta;
+      if (to < 0 || to > last) return;
+      if (dirty()) submit(input.value.trim(), to);
+      else { closePop(false); reopenAt(to); }
+    };
+    pop.querySelectorAll(".pop-beats button").forEach((b) => b.addEventListener("click", () => setBeat(Number(b.dataset.beat))));
+    pop.querySelectorAll(".pop-quick button").forEach((b) => b.addEventListener("click", () => {
+      input.value = b.dataset.n;  // 고르기만 하고 「적용」으로 저장 (변형·베이스음을 더 붙일 수 있게)
+      typed.chord = true;
+      paintChips();
+      input.focus();
+    }));
+    pop.querySelectorAll(".pop-mods button").forEach((b) => b.addEventListener("click", () => {
+      const base = input.value.trim() || ((chordAtBeat(beat) || {}).name || "");
+      const mod = b.dataset.mod === "slash" ? b.dataset.bass : b.dataset.mod;
+      if (!mod || !parseChord(base)) return;
+      input.value = applyMod(base, mod, bar);
+      typed.chord = true;
+      paintChips();
+      input.focus();
+    }));
+    input.addEventListener("input", () => { typed.chord = true; paintChips(); });
     $("#pop-ok").addEventListener("click", () => submit(input.value));
+    $("#pop-ok-next").addEventListener("click", () => (bar < last ? submit(input.value, bar + 1) : submit(input.value)));
     $("#pop-del").addEventListener("click", () => submit(""));
     $("#pop-cancel").addEventListener("click", () => closePop());
+    $("#pop-prev").addEventListener("click", () => go(-1));
+    $("#pop-next").addEventListener("click", () => go(1));
     input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); submit(input.value); } });
+    lyric.addEventListener("keydown", (ev) => {
+      if (ev.isComposing) return;  // 한글 조합 중 Enter·Tab 은 글자 확정
+      if (ev.key === "Enter") { ev.preventDefault(); submit(input.value); }
+      if (ev.key === "Tab" && !ev.shiftKey && bar < last) { ev.preventDefault(); go(1); }
+    });
+    // 팝오버 안에서 Alt+←/→ = 옆 마디, Tab 은 안에서만 돈다
+    pop.onkeydown = (ev) => {
+      if (ev.altKey && (ev.key === "ArrowLeft" || ev.key === "ArrowRight")) { ev.preventDefault(); go(ev.key === "ArrowLeft" ? -1 : 1); return; }
+      if (ev.key !== "Tab" || ev.defaultPrevented) return;
+      const items = Array.from(pop.querySelectorAll("button, input")).filter((x) => !x.disabled && x.offsetParent !== null);
+      if (!items.length) return;
+      const first = items[0], lastItem = items[items.length - 1];
+      if (!ev.shiftKey && document.activeElement === lastItem) { ev.preventDefault(); first.focus(); }
+      else if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); lastItem.focus(); }
+    };
+  }
+
+  // 다른 마디의 팝오버를 그 마디 첫 박에서 연다 (다시 그린 코드 악보 기준)
+  function reopenAt(bar) {
+    if (!ctx.edit || !ctx.view || bar < 0 || bar >= ctx.view.bars.length) return;
+    const row = document.querySelector(`#chordsheet .cs-chords[data-bar="${bar}"]`);
+    if (!row) return;
+    if (row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+    openChordPop(row, bar, null, 0);
   }
 
   function closePop(restoreFocus = true) {

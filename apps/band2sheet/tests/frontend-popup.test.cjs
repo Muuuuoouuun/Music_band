@@ -716,3 +716,61 @@ test("edit revision detects keyboard changes, undo, and motion within an active 
   h.views.discardUnsaved();
   assert.equal(h.views.getEditRevision(), beforeDiscard, "discard must not reset the revision counter");
 });
+
+test("key chips only fill the chord field, variants replace the quality, and the slash chip adds the third", () => {
+  const h = harness();
+  h.open();
+  const chips = h.document.querySelectorAll(".pop-quick button");
+  assert.deepEqual(chips.map((b) => b.dataset.n), ["C", "Dm", "Em", "F", "G", "Am", "G7"]);
+  chips[5].fire("click");
+  assert.equal(h.node("#pop-input").value, "Am");
+  assert.equal(h.requests.length, 0, "a key chip does not save by itself");
+  assert.equal(chips[5].getAttribute("aria-pressed"), "true");
+  h.node('.pop-mods button[data-mod="7"]').fire("click");
+  assert.equal(h.node("#pop-input").value, "A7", "a variant replaces the quality (no stacking)");
+  h.node("#pop-input").value = "Am";
+  h.node("#pop-input").fire("input");
+  assert.equal(h.node("#pop-slash").textContent, "/C", "the slash chip offers the minor third");
+  h.node("#pop-slash").fire("click");
+  assert.equal(h.node("#pop-input").value, "Am/C");
+  h.node("#pop-ok").fire("click");
+  assert.deepEqual(JSON.parse(h.requests[0].options.body), { bar: 0, beat: 0, name: "Am/C", semitones: 0 });
+});
+
+test("beat chips choose the beat the chord starts on", () => {
+  const h = harness();
+  h.open(1);
+  const beats = h.document.querySelectorAll(".pop-beats button");
+  assert.equal(beats.length, 4);
+  beats[2].fire("click");
+  assert.equal(beats[2].getAttribute("aria-checked"), "true");
+  assert.match(h.node("#pop-title").textContent, /2마디 3박부터 코드 편집/);
+  h.node("#pop-input").value = "F";
+  h.node("#pop-ok").fire("click");
+  assert.deepEqual(JSON.parse(h.requests[0].options.body), { bar: 1, beat: 2, name: "F", semitones: 0 });
+});
+
+test("the lyric field saves the bar's lyrics after the chord, only when changed", async () => {
+  const h = harness();
+  h.open();
+  h.node("#pop-lyric").value = "예수로 나의";
+  h.node("#pop-ok").fire("click");
+  assert.equal(h.requests.length, 1);
+  assert.match(h.requests[0].url, /\/chord$/);
+  h.requests[0].resolve({ ok: true });
+  await settle();
+  assert.equal(h.requests.length, 2);
+  assert.match(h.requests[1].url, /\/lyrics$/);
+  assert.deepEqual(JSON.parse(h.requests[1].options.body), { bar: 0, text: "예수로 나의" });
+  h.requests[1].resolve({ ok: true });
+  await settle();
+  assert.equal(h.data.bars[0].lyrics, "예수로 나의");
+  assert.equal(h.node("#chord-pop").classList.contains("hidden"), true);
+  assert.equal(h.staleMarks, 1);
+
+  h.open(1);
+  h.node("#pop-ok").fire("click");
+  h.requests[2].resolve({ ok: true });
+  await settle();
+  assert.equal(h.requests.length, 3, "unchanged lyrics are not written again");
+});
