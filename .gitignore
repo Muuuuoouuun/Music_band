@@ -16,3 +16,6 @@ dist/
 screenshot-*.png
 .DS_Store
 apps/airchoir/test/.cache/
+
+# 곡별 편곡의 파트 연습 MIDI는 저장소에 둔다
+!arrangements/**/midi/*.mid
