@@ -55,6 +55,7 @@ AirChoir 브라우저 검사에는 추가 도구가 필요합니다. 자동 모�
 apps/
   band2sheet/  # Python 패키지 band2sheet/, tests/, docs/, pyproject.toml
   airchoir/    # 브라우저 ES 모듈 src/, core/, phase0/, test/, package.json
+arrangements/ # 곡별 보컬 분할·화성 악보 (예: lord-our-god/)
 docs/         # 통합 출처와 검증 기록
 scripts/      # 두 앱의 이동 대응 검사
 ```
