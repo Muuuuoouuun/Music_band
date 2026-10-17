@@ -16,7 +16,7 @@ from music21 import bar, clef, expressions, harmony, key, layout, metadata, mete
 
 OUT = Path(__file__).resolve().parent
 NAME = "lord-our-god"
-BPM = 70  # 연습용 기본 빠르기. 원곡 영상 음원은 받지 못해 실제 템포는 확인하지 않음
+BPM = 69  # 원곡 라이브 음원에서 잰 빠르기 (한 마디 약 3.48초)
 
 # 마디 하나 = (코드 [(박 위치, 이름)], 멜로디 [(음, 길이, 가사)], 윗화음 [음], 아랫화음 [음])
 # 가사: 문자열 하나(1절만) 또는 (1절, 2절). "" 는 앞 글자를 끄는 음. 음 이름 끝 "~" 는 다음 음과 붙임줄.
@@ -151,12 +151,15 @@ C2 = transpose_up_m2(B)
 for meas, ch in zip(C2, C2_CHORDS):
     meas["chords"] = ch
 C2[-1]["final"] = True
+# 라이브 음원: C' 의 긴 음 "다"·"여" 에서 싱어가 E#5(코드의 3음)를 낸다
+C2[1]["hi"][0] = "E#5"
+C2[5]["hi"][0] = "E#5"
 
 # 악보에 적을 진행 안내 (마디 번호는 이 악보 기준)
 NOTES = {
     0: "A: 인도자 솔로",
     9: "A'1(1절) 유니즌 · A'2(2절) 3성부",
-    14: "1절도 '주의 말씀'부터 화음",
+    14: "1절 Lead+Low · 2절 Lead↔Low",
     18: "B: 1회 Lead+Low → 이후 3성부",
     26: "→ A'2(2절)",
     28: "C ×4",

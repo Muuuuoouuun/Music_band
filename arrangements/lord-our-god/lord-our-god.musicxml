@@ -26,22 +26,22 @@
       <group-symbol>bracket</group-symbol>
       <group-barline>yes</group-barline>
     </part-group>
-    <score-part id="Pe9487da5e6bf14a8cc584a9b268a0ec0">
+    <score-part id="Pa1546683a5e9d11b55dac4606ba45aa4">
       <part-name>윗화음 High</part-name>
       <part-abbreviation>High</part-abbreviation>
     </score-part>
-    <score-part id="Pb51bfedd126ffc6055f6eb3934639212">
+    <score-part id="P344d55c2819bb32f98900b329781120c">
       <part-name>멜로디 Lead</part-name>
       <part-abbreviation>Lead</part-abbreviation>
     </score-part>
-    <score-part id="Pb6e4bff89fae46a0153f029626b015da">
+    <score-part id="Pa1eed84179666e14d26211a6e7e7187c">
       <part-name>아랫화음 Low</part-name>
       <part-abbreviation>Low</part-abbreviation>
     </score-part>
     <part-group number="1" type="stop" />
   </part-list>
   <!--=========================== Part 1 ===========================-->
-  <part id="Pe9487da5e6bf14a8cc584a9b268a0ec0">
+  <part id="Pa1546683a5e9d11b55dac4606ba45aa4">
     <!--========================= Measure 0 ==========================-->
     <measure implicit="no" number="0">
       <attributes>
@@ -703,7 +703,7 @@
     <measure implicit="no" number="14">
       <direction placement="above">
         <direction-type>
-          <words font-size="8">1절도 '주의 말씀'부터 화음</words>
+          <words font-size="8">1절 Lead+Low · 2절 Lead↔Low</words>
         </direction-type>
       </direction>
       <harmony>
@@ -2176,7 +2176,7 @@
       </harmony>
       <note>
         <pitch>
-          <step>C</step>
+          <step>E</step>
           <alter>1</alter>
           <octave>5</octave>
         </pitch>
@@ -2475,7 +2475,7 @@
       </harmony>
       <note>
         <pitch>
-          <step>C</step>
+          <step>E</step>
           <alter>1</alter>
           <octave>5</octave>
         </pitch>
@@ -2678,7 +2678,7 @@
     </measure>
   </part>
   <!--=========================== Part 2 ===========================-->
-  <part id="Pb51bfedd126ffc6055f6eb3934639212">
+  <part id="P344d55c2819bb32f98900b329781120c">
     <!--========================= Measure 0 ==========================-->
     <measure implicit="no" number="0">
       <attributes>
@@ -2699,10 +2699,10 @@
         <direction-type>
           <metronome parentheses="no">
             <beat-unit>quarter</beat-unit>
-            <per-minute>70</per-minute>
+            <per-minute>69</per-minute>
           </metronome>
         </direction-type>
-        <sound tempo="70" />
+        <sound tempo="69" />
       </direction>
       <note>
         <pitch>
@@ -5263,7 +5263,7 @@
     </measure>
   </part>
   <!--=========================== Part 3 ===========================-->
-  <part id="Pb6e4bff89fae46a0153f029626b015da">
+  <part id="Pa1eed84179666e14d26211a6e7e7187c">
     <!--========================= Measure 0 ==========================-->
     <measure implicit="no" number="0">
       <attributes>
