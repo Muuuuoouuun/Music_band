@@ -1,6 +1,6 @@
 // 화면 부품: 작은 DOM 도우미와 음색 값에 묶인 슬라이더·버튼 묶음.
 import { PARAMS, getPath, toUnit, fromUnit, formatValue, waveCycle } from './patch.js';
-import { drawWaveIcon } from './draw.js';
+import { drawWaveIcon, drawBars } from './draw.js';
 
 let uid = 0;
 export const nextId = (prefix = 'c') => `${prefix}-${++uid}`;
@@ -56,14 +56,16 @@ export function control(path, bind, { label } = {}) {
   return { el, sync, input };
 }
 
-export function segmented(path, bind, { label, icons = false } = {}) {
+export function segmented(path, bind, { label, icons = false, iconFor = (v) => waveCycle(v, 64) } = {}) {
   const spec = PARAMS[path];
+  let customIcon = null;
   const buttons = spec.values.map((value, i) => {
     const b = h('button', { type: 'button', class: icons ? 'seg-btn wave-btn' : 'seg-btn', 'aria-pressed': 'false' });
     if (icons) {
       const c = h('canvas', { width: 44, height: 22, 'aria-hidden': 'true' });
       b.append(c, h('span', {}, spec.labels[i]));
-      requestAnimationFrame(() => drawWaveIcon(c, waveCycle(value, 64)));
+      if (value === 'custom') customIcon = c;
+      requestAnimationFrame(() => drawWaveIcon(c, iconFor(value)));
     } else b.textContent = spec.labels[i];
     b.addEventListener('click', () => {
       bind.set(path, value, 'change');
@@ -73,12 +75,77 @@ export function segmented(path, bind, { label, icons = false } = {}) {
   });
   const el = h('div', { class: 'ctl ctl-seg' }, h('span', { class: 'label' }, label ?? spec.label),
     h('div', { class: 'seg', role: 'group', 'aria-label': label ?? spec.label }, ...buttons));
+  let lastCustom = null;
   const sync = () => {
     const v = getPath(bind.get(), path);
     buttons.forEach((b, i) => b.setAttribute('aria-pressed', String(spec.values[i] === v)));
+    // 직접 그린 파형 아이콘은 그림이 바뀔 때마다 다시
+    const cur = bind.get().custom;
+    if (customIcon && cur !== lastCustom) {
+      lastCustom = cur;
+      drawWaveIcon(customIcon, iconFor('custom'));
+    }
   };
   sync();
   return { el, sync };
+}
+
+/**
+ * 끌어서 그리는 막대 (배음 표·맞춤 EQ). get() → 지금 값 배열, set(values, phase).
+ * count() 만큼만 보여 주고 고친다 (나머지 값은 그대로).
+ */
+export function barEditor({ label, get, set, min = 0, max = 1, sqrt = false, labels = null, count = () => get().length, compare = () => null, cls = 'bar-canvas' }) {
+  const canvas = h('canvas', { class: cls, role: 'img', 'aria-label': label });
+  let values = null;
+  let last = null;
+  let layout = null;
+  const draw = () => {
+    const src = values ?? get();
+    const n = count();
+    const cmp = compare();
+    layout = drawBars(canvas, src.slice(0, n), { min, max, sqrt, labels: labels?.slice(0, n) ?? null, compare: cmp ? cmp.slice(0, n) : null });
+  };
+  const at = (e) => {
+    const r = canvas.getBoundingClientRect();
+    const n = count();
+    const i = Math.min(n - 1, Math.max(0, Math.floor(((e.clientX - r.left) / r.width) * n)));
+    return { i, v: Math.round(layout.yToValue(e.clientY - r.top) * 1000) / 1000 };
+  };
+  const paint = (e) => {
+    const p = at(e);
+    // 빠르게 끌어도 사이 막대가 비지 않게 이어 칠한다
+    const from = last ?? p;
+    const steps = Math.abs(p.i - from.i);
+    for (let k = 0; k <= steps; k++) {
+      const t = steps ? k / steps : 1;
+      const i = Math.round(from.i + (p.i - from.i) * t);
+      values[i] = Math.min(max, Math.max(min, from.v + (p.v - from.v) * t));
+    }
+    last = p;
+    draw();
+    set([...values], 'input');
+  };
+  canvas.addEventListener('pointerdown', (e) => {
+    values = [...get()];
+    last = null;
+    canvas.setPointerCapture(e.pointerId);
+    paint(e);
+    e.preventDefault();
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (values) paint(e);
+  });
+  const end = () => {
+    if (!values) return;
+    const v = values;
+    values = null;
+    last = null;
+    set([...v], 'change');
+  };
+  canvas.addEventListener('pointerup', end);
+  canvas.addEventListener('pointercancel', end);
+  requestAnimationFrame(draw);
+  return { el: canvas, sync: draw };
 }
 
 export function toggle(path, bind, { label } = {}) {
@@ -104,6 +171,10 @@ export function controlGroup(bind) {
     },
     seg(path, opts) {
       const c = segmented(path, bind, opts);
+      list.push(c);
+      return c.el;
+    },
+    custom(c) {
       list.push(c);
       return c.el;
     },

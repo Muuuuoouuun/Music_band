@@ -6,7 +6,7 @@
 |---|---|---|---|
 | **band2sheet · 악보 스튜디오** | 영상·음원·링크를 악기별 악보로 변환하고 코드·가사·음표 편집 | [apps/band2sheet](apps/band2sheet/README.md) | `http://127.0.0.1:8765` |
 | **AirChoir · 허밍 합창단** | 목소리 화음, 손동작 지휘, 녹음한 오브 반복 재생 (Phase 2) | [apps/airchoir](apps/airchoir/README.md) · [계획](apps/airchoir/PLAN.md) | `http://localhost:8000` |
-| **음색 공방 · Soundsmith** (목업) | 신스 음색 만들기·도우미 슬라이더, 샘플 루프 지점·SFZ 내보내기, 4트랙 루퍼, 기준음·음률 튜닝 | [apps/soundsmith](apps/soundsmith/README.md) · [조사](docs/SYNTH_APP_RESEARCH.md) | `http://localhost:8010` |
+| **음색 공방 · Soundsmith** | 고급 신스 음색 45개·직접 그리는 배음·쉬머·맞춤 EQ, **음원 파일·유튜브 링크를 듣고 닮은 음색 만들기**, 샘플 가공(늘리기·거꾸로)·SFZ 내보내기, 4트랙 루퍼, 음률 튜닝 | [apps/soundsmith](apps/soundsmith/README.md) · [조사](docs/SYNTH_APP_RESEARCH.md) | `http://127.0.0.1:8010` |
 
 ## band2sheet 시작
 
@@ -43,7 +43,7 @@ cd apps/soundsmith
 npm start
 ```
 
-설치할 패키지가 없습니다. Python 3(정적 서버)과 브라우저만 있으면 됩니다. 샘플과 루퍼 녹음은 페이지 메모리에만 있습니다.
+설치할 npm 패키지가 없습니다. Python 3 와 브라우저만 있으면 됩니다. `npm start` 는 앱 파일과 함께 링크 가져오기 도우미(`server.py`)를 엽니다. 유튜브 링크를 쓰려면 [ffmpeg](https://ffmpeg.org) 와 `pip install yt-dlp` 가 필요하고, 없으면 음원 파일만 불러옵니다. 샘플과 루퍼 녹음은 페이지 메모리에만 있습니다.
 
 ## 개발과 검증
 
@@ -56,7 +56,7 @@ npm start
 | band2sheet 로컬 파일 처리 | `.venv/bin/python -m pytest tests/test_fetch.py -k 'not app'` | pytest, yt-dlp, ffmpeg; 합성 MP4와 localhost만 사용 |
 | band2sheet 전체 | `.venv/bin/python -m pytest` | 전체 기본 의존성, 선택 엔진 설치 상태에 따라 범위 달라짐 |
 | AirChoir 단위 검사 | `npm test` | Node, 실제 장치 없이 실행 |
-| 음색 공방 단위 검사 | `npm test` | Node, 브라우저 없이 실행 |
+| 음색 공방 단위 검사 | `npm test` | Node(분석·음색·샘플), Python·ffmpeg(링크 도우미, localhost 합성 WAV 만 사용) |
 | 음색 공방 브라우저 검사 | `npm run check` | `npm start` 서버, 설치된 Playwright·Chromium |
 
 AirChoir 브라우저 검사에는 추가 도구가 필요합니다. 자동 모델 다운로드 여부와 선택 실행법은 [앱 테스트 안내](apps/airchoir/README.md#테스트)를 먼저 확인하세요. 자동 테스트의 상태·출력 검증과 실제 음원의 채보·화음 품질 평가는 구분합니다.
@@ -69,7 +69,7 @@ AirChoir 브라우저 검사에는 추가 도구가 필요합니다. 자동 모�
 apps/
   band2sheet/  # Python 패키지 band2sheet/, tests/, docs/, pyproject.toml
   airchoir/    # 브라우저 ES 모듈 src/, core/, phase0/, test/, package.json
-  soundsmith/  # 브라우저 ES 모듈 src/, test/, package.json (목업)
+  soundsmith/  # 브라우저 ES 모듈 src/, 링크 도우미 server.py, test/, package.json
 docs/         # 통합 출처와 검증 기록
 scripts/      # 두 앱의 이동 대응 검사
 ```

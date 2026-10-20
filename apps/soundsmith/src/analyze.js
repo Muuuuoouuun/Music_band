@@ -556,7 +556,10 @@ export function analyzeAudio(channels, sr, { start = 0, end = null, maxSeconds =
   let kind = 'mix';
   // 화음은 구성음들의 '가상 기본음'(C·E·G → 두 옥타브 아래 C)으로 한 음처럼 보일 수 있다.
   // 진짜 한 음은 1·2배음 중 하나가 세므로, 처음 센 배음이 3배음 이상이면 화음으로 본다
-  const firstStrong = harm ? harm.amps.findIndex((v) => v > 0.3) : -1;
+  const amps = harm?.amps ?? [];
+  let firstStrong = amps.findIndex((v) => v > 0.3);
+  // 기본음이 거의 없고 2배음부터 센데 3·5배음도 세면, 한 옥타브 위 음에 1.5·2.5배 소리가 있는 셈 → 화음(E·B·E·G#)
+  if (firstStrong === 1 && amps[0] < 0.12 && (amps[2] > 0.3 || amps[4] > 0.3)) firstStrong = 2;
   if (!pitch && onsetRate < 1.2 && strongPcs.length > 6) kind = 'noise';
   else if (pitch && pitch.clarity >= 0.75 && harm && harm.harmonicity >= 0.4 && onsetRate <= 2.5 && firstStrong >= 0 && firstStrong <= 1) kind = 'tone';
   else if (strongPcs.length >= 2 && strongPcs.length <= 6 && onsetRate <= 2.5) kind = 'chord';
@@ -890,9 +893,24 @@ export function patchFromMix(a, presets, { name = '닮은 음색' } = {}) {
   const ranked = presets
     .map((entry) => ({ entry, d: traitDistance(want, patchTraits(entry.patch)) }))
     .sort((x, y) => x.d - y.d);
+  const adapt = (from) => adaptToMix(from, a, name);
   const from = ranked[0].entry.patch;
+  const p = adapt(from);
+  // 다음 후보 둘도 같은 방법으로 옮겨 둔다 (렌더해 보고 더 닮은 쪽을 고르게)
+  const alternatives = ranked.slice(1, 3).map((r) => ({ patch: adapt(r.entry.patch), from: r.entry.patch.name }));
+  const notes = [`값으로 본 가장 닮은 기본 음색 '${from.name}'·'${ranked[1]?.entry.patch.name}'·'${ranked[2]?.entry.patch.name}'을 연주해 견줬어요`];
+  // 비교용으로 칠 음: 센 음 높이(최대 4개)를 소리 중심 높이 근처에 쌓는다
+  const pcs = a.strongPcs.slice(0, 4);
+  const root = pcs.length ? pcs[0] : a.centerMidi % 12;
+  const baseMidi = a.centerMidi - ((a.centerMidi - root + 120) % 12);
+  const render = (pcs.length ? pcs : [root]).map((pc) => baseMidi + ((pc - root + 12) % 12));
+  notes.push(a.kind === 'chord' ? '화음·지속음이라 톤 균형(맞춤 EQ) 위주로 맞춰요' : '여러 소리가 섞인 구간이라 톤 균형(맞춤 EQ) 위주로 맞춰요');
+  return { patch: p, notes, render, from: from.name, alternatives, ranked: ranked.slice(0, 3).map((r) => r.entry.patch.name) };
+}
+
+/** 기본 음색을 원음 쪽으로: 공간·폭·(화음이면) 어택·비브라토를 옮기고 맞춤 EQ 는 비운다 */
+function adaptToMix(from, a, name) {
   const p = structuredClone(from);
-  const notes = [`가장 닮은 기본 음색 '${from.name}'에서 출발했어요`];
   const mix = (x, y, t) => x + (y - x) * t;
   p.fx.reverb = round(mix(p.fx.reverb, a.space.amount, a.space.measured ? 0.8 : 0.4), 2);
   if (a.space.measured) p.fx.size = round(a.space.rt60, 2);
@@ -901,13 +919,7 @@ export function patchFromMix(a, presets, { name = '닮은 음색' } = {}) {
   if (a.vibrato && p.lfo.depth < 0.05) p.lfo = { target: 'pitch', rate: a.vibrato.rate, depth: round(a.vibrato.depth / 50, 2), delay: 0.4 };
   p.eq = { ...p.eq, match: p.eq.match.map(() => 0) };
   p.name = name.slice(0, 40);
-  // 비교용으로 칠 음: 센 음 높이(최대 4개)를 소리 중심 높이 근처에 쌓는다
-  const pcs = a.strongPcs.slice(0, 4);
-  const root = pcs.length ? pcs[0] : a.centerMidi % 12;
-  const baseMidi = a.centerMidi - ((a.centerMidi - root + 120) % 12);
-  const render = (pcs.length ? pcs : [root]).map((pc) => baseMidi + ((pc - root + 12) % 12));
-  notes.push(a.kind === 'chord' ? '화음·지속음이라 톤 균형(맞춤 EQ) 위주로 맞춰요' : '여러 소리가 섞인 구간이라 톤 균형(맞춤 EQ) 위주로 맞춰요');
-  return { patch: normalizePatch(p), notes, render, from: from.name, ranked: ranked.slice(0, 3).map((r) => r.entry.patch.name) };
+  return normalizePatch(p);
 }
 
 /** 분석 결과에 맞는 출발 음색. kind 에 따라 다시 합성하거나 가장 닮은 기본 음색을 고른다. */

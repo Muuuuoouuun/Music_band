@@ -38,6 +38,19 @@ export async function matchSound(ref, presets, { name, onProgress = () => {} } =
   onProgress('출발 음색 연주해 보는 중');
   let best = { patch: plan.patch, ...(await renderFeatures(plan.patch, ref, plan.render)) };
   best.sim = similarity(ref, best.features);
+  // 화음·믹스: 값으로 고른 후보 셋을 실제로 연주해 견주고 가장 닮은 것에서 출발한다
+  if (plan.mode === 'nearest') {
+    for (const alt of plan.alternatives ?? []) {
+      onProgress(`'${alt.from}' 견주는 중`);
+      const r = await renderFeatures(alt.patch, ref, plan.render);
+      const sim = similarity(ref, r.features);
+      if (sim.score > best.sim.score) {
+        best = { patch: alt.patch, ...r, sim };
+        plan.from = alt.from;
+      }
+    }
+    plan.notes.splice(1, 0, `그중 가장 닮은 '${plan.from}'에서 출발했어요`);
+  }
   const steps = [{ label: plan.mode === 'resynth' ? '배음으로 다시 합성' : `'${plan.from}'에서 출발`, score: best.sim.score }];
   // 잔향: 원음과 만든 음색의 꼬리를 같은 자로 재서, 남는 크기 차이만큼 양을, 줄어드는 속도 차이만큼 길이를 고친다
   for (let round = 0; round < 2 && ref.space?.resid != null; round++) {

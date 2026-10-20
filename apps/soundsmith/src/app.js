@@ -9,11 +9,12 @@ import { Keyboard } from './keyboard.js';
 import { drawScope } from './draw.js';
 import * as store from './store.js';
 import { SynthView } from './view-synth.js';
+import { MatchView } from './view-match.js';
 import { SamplerView } from './view-sampler.js';
 import { LooperView } from './view-looper.js';
 import { TuningView } from './view-tuning.js';
 
-const TABS = ['synth', 'sampler', 'looper', 'tuning'];
+const TABS = ['synth', 'match', 'sampler', 'looper', 'tuning'];
 
 class App {
   constructor() {
@@ -238,6 +239,7 @@ const app = new App();
 window.soundsmith = app; // 브라우저 검사용
 
 SynthView(document.getElementById('view-synth'), app);
+app.match = MatchView(document.getElementById('view-match'), app);
 SamplerView(document.getElementById('view-sampler'), app);
 app.looper = LooperView(document.getElementById('view-looper'), app);
 TuningView(document.getElementById('view-tuning'), app);

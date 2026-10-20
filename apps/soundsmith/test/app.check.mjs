@@ -1,5 +1,6 @@
-// 브라우저에서 화면 전체를 눌러 보는 확인: 네 화면을 열고, 건반을 치고, 랜덤·변주·되돌리기,
-// 데모 샘플 루프, 루퍼 재생·녹음, 튜닝 변경을 해 본다. 콘솔 오류가 하나라도 나면 실패.
+// 브라우저에서 화면 전체를 눌러 보는 확인: 다섯 화면을 열고, 건반을 치고, 랜덤·변주·되돌리기·섞기·배음 그리기,
+// 음원 따라 만들기(예시 소리 → 닮은 음색·더 비슷하게·톤 입히기·샘플·늘리기), 데모 샘플 루프와 가공,
+// 루퍼 재생·녹음, 튜닝 변경을 해 본다. 콘솔 오류가 하나라도 나면 실패.
 // 실행: npm start 로 서버를 띄운 뒤 node test/app.check.mjs  (SHOTS=폴더 를 주면 화면을 저장)
 import { chromium, launchOptions } from './browser.mjs';
 
@@ -43,6 +44,19 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   const cutoff0 = await page.evaluate(() => window.soundsmith.patch.filter.cutoff);
   await page.locator('.macro-range').first().fill('900');
   r.macroBrighter = (await page.evaluate(() => window.soundsmith.patch.filter.cutoff)) > cutoff0;
+  // 섞기: 지금 음색에서 고른 음색 쪽으로
+  await page.selectOption('.morph select', { label: '신스 베이스' });
+  await page.locator('.morph input[type=range]').fill('50');
+  r.morphName = await page.evaluate(() => window.soundsmith.patch.name);
+  // 배음 그리기: 막대를 끌면 오실레이터 1이 직접 그린 파형으로
+  const bars = page.locator('.bar-canvas').first();
+  await bars.evaluate((el) => el.scrollIntoView({ block: 'center' })); // 아래 붙은 건반에 가리지 않게
+  const box = await bars.boundingBox();
+  await page.mouse.move(box.x + box.width * 0.1, box.y + box.height * 0.2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.8, { steps: 6 });
+  await page.mouse.up();
+  r.drawn = await page.evaluate(() => ({ wave: window.soundsmith.patch.osc[0].wave, h4: window.soundsmith.patch.custom[4] }));
   // 프리셋 고르기
   await page.locator('.lib-item', { hasText: '어쿠스틱 기타' }).click();
   r.source = await page.evaluate(() => window.soundsmith.patch.source);
@@ -62,6 +76,12 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   r.sampleVoice = await page.evaluate(() => window.soundsmith.live.voiceCount);
   await page.keyboard.up('h');
   r.samplerOverflow = await overflow();
+  // 가공: 거꾸로 → 원래대로
+  await page.click('button:text-is("거꾸로")');
+  await page.waitForFunction(() => window.soundsmith.sample.name.endsWith('거꾸로'), null, { timeout: 5000 }).catch(() => {});
+  r.reversed = await page.evaluate(() => window.soundsmith.sample.name);
+  await page.click('button:text-is("원래대로")');
+  r.restored = await page.evaluate(() => window.soundsmith.sample.name);
   if (shots) await page.screenshot({ path: `${shots}/${viewport.name}-sampler.png`, fullPage: viewport.name === 'desktop' });
   // 루퍼: 재생, 녹음(카운트 후), 정지
   await page.click('.tab[data-tab="looper"]');
@@ -92,6 +112,38 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   await page.waitForTimeout(300);
   r.tuningOverflow = await overflow();
   if (shots) await page.screenshot({ path: `${shots}/${viewport.name}-tuning.png`, fullPage: viewport.name === 'desktop' });
+  // 음원 따라 만들기: 예시 첼로 한 음 → 잰 결과 → 닮은 음색 → 더 비슷하게
+  await page.click('.tab[data-tab="match"]');
+  await page.click('text=예시: 첼로 한 음');
+  await page.waitForFunction(() => window.soundsmith.match.state.analysis);
+  r.matchKind = await page.textContent('.kind-badge');
+  await page.click('text=① 닮은 음색 만들기');
+  await page.waitForFunction(() => window.soundsmith.match.state.result && !window.soundsmith.match.state.busy, null, { timeout: 30000 });
+  r.made = await page.evaluate(() => ({ score: window.soundsmith.match.state.result.score, wave: window.soundsmith.patch.osc[0].wave, name: window.soundsmith.patch.name }));
+  await page.click('.result >> text=▶ 만든 음색');
+  await page.waitForTimeout(200);
+  await page.click('text=더 비슷하게');
+  await page.waitForFunction(() => !window.soundsmith.match.state.busy, null, { timeout: 60000 });
+  r.refined = await page.evaluate(() => window.soundsmith.match.state.result.score);
+  r.matchOverflow = await overflow();
+  if (shots) await page.screenshot({ path: `${shots}/${viewport.name}-match.png`, fullPage: viewport.name === 'desktop' });
+  // 예시 화음 → 톤만 입히기 → 샘플로 → 늘리기
+  await page.click('text=예시: 패드 화음');
+  await page.waitForFunction(() => window.soundsmith.match.state.analysis?.kind !== 'tone' && !window.soundsmith.match.state.busy, null, { timeout: 30000 });
+  r.chordKind = await page.evaluate(() => window.soundsmith.match.state.analysis.kind);
+  await page.click('text=② 지금 음색에 톤만 입히기');
+  await page.waitForFunction(() => !window.soundsmith.match.state.busy, null, { timeout: 30000 });
+  r.toned = await page.evaluate(() => ({ name: window.soundsmith.patch.name, eq: window.soundsmith.patch.eq.match.some((v) => v !== 0) }));
+  await page.click('text=③ 구간을 샘플로');
+  r.regionSample = await page.evaluate(() => ({ source: window.soundsmith.patch.source, len: window.soundsmith.sample.data.length }));
+  await page.click('text=④ 앰비언트 패드로 늘리기');
+  await page.waitForFunction(() => !window.soundsmith.match.state.busy, null, { timeout: 30000 });
+  r.stretched = await page.evaluate(() => ({ seconds: window.soundsmith.sample.data.length / window.soundsmith.sample.sr, loop: window.soundsmith.sample.loopMode, cat: window.soundsmith.patch.category }));
+  await page.keyboard.down('d');
+  await page.waitForTimeout(150);
+  r.padVoice = await page.evaluate(() => window.soundsmith.live.voiceCount);
+  await page.keyboard.up('d');
+  r.linkState = await page.textContent('.link-state');
   await page.close();
 }
 console.log(JSON.stringify(results, null, 1));
@@ -110,7 +162,14 @@ for (const [name, r] of Object.entries(results)) {
   if (r.sampleVoice < 1) bad.push('샘플 연주');
   if (r.recorded?.join() !== '60,67' || r.afterUndo !== 0) bad.push(`루퍼 녹음 ${r.recorded} / ${r.afterUndo}`);
   if (r.tuning.a !== 442 || r.tuning.t !== 'werckmeister3') bad.push('튜닝');
-  for (const k of ['synthOverflow', 'samplerOverflow', 'looperOverflow', 'tuningOverflow']) if (r[k] > 0) bad.push(`${k}=${r[k]}`);
+  if (!r.morphName.includes('×')) bad.push('섞기');
+  if (r.drawn.wave !== 'custom') bad.push('배음 그리기');
+  if (!r.reversed.endsWith('거꾸로') || r.restored.endsWith('거꾸로')) bad.push('샘플 가공');
+  if (r.matchKind !== '한 음' || r.made.wave !== 'custom' || r.made.score < 60) bad.push(`닮은 음색 ${JSON.stringify(r.made)}`);
+  if (r.refined < r.made.score) bad.push('더 비슷하게');
+  if (r.chordKind === 'tone' || !r.toned.eq) bad.push('톤만 입히기');
+  if (r.regionSample.source !== 'sample' || r.stretched.seconds < 10 || r.stretched.loop !== 'forward' || r.padVoice < 1) bad.push('샘플·늘리기');
+  for (const k of ['synthOverflow', 'samplerOverflow', 'looperOverflow', 'tuningOverflow', 'matchOverflow']) if (r[k] > 0) bad.push(`${k}=${r[k]}`);
   if (bad.length) {
     console.error(name, '실패:', bad.join(', '));
     process.exitCode = 1;

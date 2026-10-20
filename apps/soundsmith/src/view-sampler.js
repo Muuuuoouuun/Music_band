@@ -2,7 +2,8 @@
 // 기준 음·미세 조정(튜닝), 루프 방식, 크로스페이드, SFZ 악기 내보내기.
 import { h, panel, nextId } from './ui.js';
 import { drawSample, drawSeam } from './draw.js';
-import { peaks, trimSilence, detectPitch, findLoop, upwardZeroCrossings, encodeWav, sfzText, demoSample, toMono } from './sample.js';
+import { peaks, trimSilence, detectPitch, findLoop, upwardZeroCrossings, encodeWav, sfzText, demoSample, toMono, reversed, withFades } from './sample.js';
+import { paulstretch } from './analyze.js';
 import { noteName } from './tuning.js';
 import { renderNote } from './engine.js';
 import { makeZip } from './zip.js';
@@ -68,6 +69,8 @@ export function SamplerView(root, app) {
   const xfade = h('input', { type: 'range', id: xfId, min: 0, max: 200, step: 1 });
   const xfOut = h('output', { for: xfId });
   const useBtn = h('button', { type: 'button', class: 'primary' }, '이 샘플로 건반 연주');
+  const stretchSel = h('select', { 'aria-label': '늘리는 배수' }, ...[2, 4, 8].map((v) => h('option', { value: v, selected: v === 4 || null }, `×${v}`)));
+  const restoreBtn = h('button', { type: 'button', class: 'quiet' }, '원래대로');
   const exportBtn = h('button', { type: 'button' }, 'SFZ 악기 내보내기 (.zip)');
 
   const body = h('div', { class: 'sampler-body' },
@@ -91,6 +94,13 @@ export function SamplerView(root, app) {
           if (s.detected) { s.root = s.detected.note; s.fine = Math.round(s.detected.cents); }
         }),
       }, '음높이 다시 찾기'))),
+    panel('가공', { hint: '거꾸로 돌리면 스웰, 늘리면 흐르는 앰비언트 패드가 돼요. 원래대로로 언제든 돌아가요.' },
+      h('div', { class: 'btn-row' },
+        h('button', { type: 'button', onclick: () => processSample('거꾸로', (x) => reversed(x)) }, '거꾸로'),
+        h('div', { class: 'joined' }, stretchSel,
+          h('button', { type: 'button', onclick: () => processSample(`×${stretchSel.value}`, (x, sr) => paulstretch(x, sr, Number(stretchSel.value)), { pad: true }) }, '늘리기')),
+        h('button', { type: 'button', onclick: () => processSample('페이드', (x, sr) => withFades(x, sr, 200, 400)) }, '앞뒤 페이드'),
+        restoreBtn)),
     panel('재생 방식', {},
       h('div', { class: 'ctl ctl-seg' }, h('span', { class: 'label' }, '루프'), h('div', { class: 'seg', role: 'group', 'aria-label': '루프 방식' }, ...modeBtns)),
       modeHint,
@@ -178,6 +188,36 @@ export function SamplerView(root, app) {
       recorder = null;
       app.notice('마이크를 열지 못했어요. 브라우저의 마이크 권한을 확인하거나, 파일을 불러오세요.', 'bad');
     }
+  });
+
+  // ---- 가공: 시작~끝 구간을 바꿔 새 샘플로 (기준 음은 그대로). 처음 소리는 '원래대로'를 위해 남긴다 ----
+  async function processSample(label, fn, { pad = false } = {}) {
+    const s = app.sample;
+    if (!s) return;
+    app.notice(`${label} 하는 중…`);
+    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+    const original = s.original ?? { name: s.name, data: s.data };
+    const next = analyzeSample(`${original.name} ${label}`.slice(0, 40), fn(s.data.slice(s.start, s.end), s.sr), s.sr, s.root);
+    next.fine = s.fine;
+    next.original = original;
+    if (pad) {
+      // 늘린 소리는 고르게 흘러서 길게 크로스페이드하면 어디서 이어도 매끄럽다
+      next.loopMode = 'forward';
+      if (next.cost == null || next.cost > 0.2) {
+        next.loopStart = Math.round(next.start + (next.end - next.start) * 0.2);
+        next.loopEnd = Math.round(next.start + (next.end - next.start) * 0.92);
+      }
+      next.xfadeMs = 200;
+    }
+    app.setSample(next);
+    app.notice(`'${next.name}' 으로 바꿨어요.`, 'good');
+  }
+  restoreBtn.addEventListener('click', () => {
+    const s = app.sample;
+    if (!s?.original) return;
+    const back = analyzeSample(s.original.name, s.original.data, s.sr, s.root);
+    back.fine = s.fine;
+    app.setSample(back);
   });
 
   // ---- 값 바꾸기 ----
@@ -300,6 +340,7 @@ export function SamplerView(root, app) {
     body.hidden = !s;
     exportBtn.disabled = !s;
     if (!s) return;
+    restoreBtn.disabled = !s.original;
     const sec = (n) => `${(n / s.sr).toFixed(2)} s`;
     const d = s.detected;
     info.replaceChildren(

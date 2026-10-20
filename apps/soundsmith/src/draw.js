@@ -103,6 +103,13 @@ export function drawFilter(canvas, filter) {
   const mag = new Float32Array(n);
   const ph = new Float32Array(n);
   respFilter.getFrequencyResponse(freqs, mag, ph);
+  // 24dB 는 같은 필터 두 단 (둘째 단은 레조넌스 없이)
+  if (filter.slope === 24) {
+    respFilter.Q.value = 0.6;
+    const second = new Float32Array(n);
+    respFilter.getFrequencyResponse(freqs, second, ph);
+    for (let i = 0; i < n; i++) mag[i] *= second[i];
+  }
   const yOf = (db) => h / 2 - (Math.max(-24, Math.min(24, db)) / 24) * (h / 2 - 4);
   g.fillStyle = color('signal-wash');
   g.strokeStyle = color('signal');
@@ -340,4 +347,202 @@ export function drawNeedle(canvas, cents) {
   g.moveTo(cx, cy);
   g.lineTo(cx + (r - 4) * Math.cos(a), cy + (r - 4) * Math.sin(a));
   g.stroke();
+}
+
+/**
+ * 막대 그림: 배음 표(0..1)·맞춤 EQ(±dB)·비교. values 위에 compare(원음 등)를 선으로 겹친다.
+ * opts: { min, max, accent, compare, labels, sqrt (작은 값이 보이게 √ 눈금), active }
+ */
+export function drawBars(canvas, values, { min = 0, max = 1, accent = 'brass', compare = null, labels = null, sqrt = false, active = -1 } = {}) {
+  const { g, w, h } = fit(canvas);
+  const n = values.length;
+  const bottom = labels ? h - 14 : h;
+  const scale = (v) => {
+    const u = (Math.min(max, Math.max(min, v)) - min) / (max - min);
+    return sqrt ? Math.sqrt(u) : u;
+  };
+  const zeroU = min < 0 ? scale(0) : 0;
+  const yOf = (v) => bottom - 3 - scale(v) * (bottom - 6);
+  const y0 = bottom - 3 - zeroU * (bottom - 6);
+  grid(g, w, bottom, 1, min < 0 ? 4 : 2);
+  g.strokeStyle = color('line-strong');
+  g.beginPath();
+  g.moveTo(0, Math.round(y0) + 0.5);
+  g.lineTo(w, Math.round(y0) + 0.5);
+  g.stroke();
+  const bw = w / n;
+  for (let i = 0; i < n; i++) {
+    const y = yOf(values[i]);
+    g.fillStyle = color(i === active ? 'brass-hi' : accent);
+    g.fillRect(i * bw + Math.min(1, bw * 0.15), Math.min(y, y0), Math.max(1, bw - Math.min(2, bw * 0.3)), Math.max(1, Math.abs(y0 - y)));
+  }
+  if (compare) {
+    g.strokeStyle = color('signal');
+    g.lineWidth = 2;
+    g.beginPath();
+    compare.forEach((v, i) => {
+      const x = i * bw + bw / 2;
+      const y = yOf(v);
+      if (i) g.lineTo(x, y); else g.moveTo(x, y);
+    });
+    g.stroke();
+  }
+  if (labels) {
+    g.fillStyle = color('muted');
+    g.font = `10px ${color('font-data')}`;
+    const every = Math.max(1, Math.ceil(n / Math.max(1, w / 34)));
+    labels.forEach((t, i) => {
+      if (i % every) return;
+      const tw = g.measureText(t).width;
+      g.fillText(t, Math.min(w - tw, Math.max(0, i * bw + bw / 2 - tw / 2)), h - 2);
+    });
+  }
+  return { bw, yToValue: (y) => {
+    let u = Math.min(1, Math.max(0, (bottom - 3 - y) / (bottom - 6)));
+    if (sqrt) u *= u;
+    return min + u * (max - min);
+  } };
+}
+
+/** 긴 음원 전체 파형 + 고른 구간 + 재생 위치. view: { from, to } 초, region: { start, end } 초. */
+export function drawOverview(canvas, pk, { view, region = null, playhead = null, marks = [] }) {
+  const { g, w, h } = fit(canvas);
+  const span = view.to - view.from || 1;
+  const xOf = (t) => ((t - view.from) / span) * w;
+  g.strokeStyle = color('grid');
+  g.beginPath();
+  g.moveTo(0, h / 2 + 0.5);
+  g.lineTo(w, h / 2 + 0.5);
+  g.stroke();
+  for (const m of marks) {
+    g.fillStyle = color('signal-wash');
+    g.fillRect(xOf(m.start), 0, Math.max(2, xOf(m.end) - xOf(m.start)), 6);
+  }
+  if (region) {
+    g.fillStyle = color('brass-wash');
+    g.fillRect(xOf(region.start), 0, xOf(region.end) - xOf(region.start), h);
+  }
+  const buckets = pk.length / 2;
+  g.fillStyle = color('fg');
+  for (let b = 0; b < buckets; b++) {
+    const x = (b / buckets) * w;
+    const y1 = h / 2 - pk[b * 2 + 1] * (h / 2 - 4);
+    const y2 = h / 2 - pk[b * 2] * (h / 2 - 4);
+    g.fillRect(x, y1, Math.max(1, w / buckets - 0.3), Math.max(1, y2 - y1));
+  }
+  if (region) {
+    g.strokeStyle = color('brass');
+    g.lineWidth = 2;
+    for (const t of [region.start, region.end]) {
+      const x = Math.round(xOf(t)) + 0.5;
+      g.beginPath();
+      g.moveTo(x, 0);
+      g.lineTo(x, h);
+      g.stroke();
+    }
+  }
+  if (playhead != null) {
+    g.strokeStyle = color('signal');
+    g.lineWidth = 2;
+    const x = xOf(playhead);
+    g.beginPath();
+    g.moveTo(x, 0);
+    g.lineTo(x, h);
+    g.stroke();
+  }
+}
+
+/** 톤 균형 비교: 1/3 옥타브 곡선 두 개 (원음·만든 음색), 20Hz~20kHz 로그 눈금. */
+export function drawBalance(canvas, centers, ref, cand = null) {
+  const { g, w, h } = fit(canvas);
+  grid(g, w, h, 3, 4);
+  const xOf = (f) => (Math.log(f / 20) / Math.log(1000)) * w;
+  const all = [...ref, ...(cand ?? [])];
+  const top = Math.max(...all) + 3;
+  const bottom = top - 48;
+  const yOf = (db) => 4 + ((top - Math.max(bottom, db)) / (top - bottom)) * (h - 18);
+  const line = (vals, col, fill) => {
+    g.beginPath();
+    vals.forEach((v, i) => {
+      const x = xOf(centers[i]);
+      const y = yOf(v);
+      if (i) g.lineTo(x, y); else g.moveTo(x, y);
+    });
+    if (fill) {
+      g.strokeStyle = color(col);
+      g.lineWidth = 2;
+      g.stroke();
+      g.lineTo(xOf(centers.at(-1)), h);
+      g.lineTo(xOf(centers[0]), h);
+      g.closePath();
+      g.fillStyle = color(`${col}-wash`);
+      g.fill();
+    } else {
+      g.strokeStyle = color(col);
+      g.lineWidth = 2;
+      g.setLineDash([5, 3]);
+      g.stroke();
+      g.setLineDash([]);
+    }
+  };
+  line(ref, 'signal', true);
+  if (cand) line(cand, 'brass', false);
+  g.fillStyle = color('muted');
+  g.font = `11px ${color('font-data')}`;
+  ['100', '1k', '10k'].forEach((t, i) => g.fillText(t, xOf([100, 1000, 10000][i]) + 3, h - 4));
+}
+
+const eqNodes = respCtx ? { shelfLo: respCtx.createBiquadFilter(), mid: respCtx.createBiquadFilter(), shelfHi: respCtx.createBiquadFilter(), bands: [] } : null;
+
+/** EQ 3밴드 + 맞춤 EQ 를 겹친 실제 응답 (±18dB). bands: 맞춤 EQ 가운데 주파수 */
+export function drawEq(canvas, eq, bands) {
+  const { g, w, h } = fit(canvas);
+  grid(g, w, h, 3, 4);
+  if (!eqNodes) return;
+  eqNodes.shelfLo.type = 'lowshelf';
+  eqNodes.shelfLo.frequency.value = 180;
+  eqNodes.shelfLo.gain.value = eq.low;
+  eqNodes.mid.type = 'peaking';
+  eqNodes.mid.frequency.value = eq.midFreq;
+  eqNodes.mid.Q.value = 0.9;
+  eqNodes.mid.gain.value = eq.mid;
+  eqNodes.shelfHi.type = 'highshelf';
+  eqNodes.shelfHi.frequency.value = 5500;
+  eqNodes.shelfHi.gain.value = eq.high;
+  while (eqNodes.bands.length < bands.length) eqNodes.bands.push(respCtx.createBiquadFilter());
+  bands.forEach((f, i) => {
+    const b = eqNodes.bands[i];
+    b.type = 'peaking';
+    b.frequency.value = Math.min(f, 19000);
+    b.Q.value = 1.41;
+    b.gain.value = eq.match[i];
+  });
+  const n = 200;
+  const freqs = new Float32Array(n);
+  for (let i = 0; i < n; i++) freqs[i] = 20 * 1000 ** (i / (n - 1));
+  const total = new Float32Array(n).fill(0);
+  const mag = new Float32Array(n);
+  const ph = new Float32Array(n);
+  for (const node of [eqNodes.shelfLo, eqNodes.mid, eqNodes.shelfHi, ...eqNodes.bands.slice(0, bands.length)]) {
+    node.getFrequencyResponse(freqs, mag, ph);
+    for (let i = 0; i < n; i++) total[i] += 20 * Math.log10(mag[i] || 1e-6);
+  }
+  const yOf = (db) => h / 2 - (Math.max(-18, Math.min(18, db)) / 18) * (h / 2 - 4);
+  g.strokeStyle = color('line-strong');
+  g.beginPath();
+  g.moveTo(0, h / 2 + 0.5);
+  g.lineTo(w, h / 2 + 0.5);
+  g.stroke();
+  g.strokeStyle = color('signal');
+  g.lineWidth = 2;
+  g.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * w;
+    if (i) g.lineTo(x, yOf(total[i])); else g.moveTo(x, yOf(total[i]));
+  }
+  g.stroke();
+  g.fillStyle = color('muted');
+  g.font = `11px ${color('font-data')}`;
+  ['100', '1k', '10k'].forEach((t, i) => g.fillText(t, ((Math.log([100, 1000, 10000][i] / 20) / Math.log(1000)) * w) + 3, h - 4));
+  g.fillText('±18dB', w - 44, 12);
 }
