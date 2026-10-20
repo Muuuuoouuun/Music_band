@@ -2,10 +2,10 @@
 // 아래는 자세히 조절(소리 흐름 그림을 눌러 고칠 곳 고르기 → 배음 그리기·끄는 필터·끄는 엔벨로프·세부 값).
 import {
   CATEGORIES, MACROS, RANDOM_KINDS, SOURCES, PARAMS, applyMacro, normalizePatch, randomPatch, mutatePatch,
-  describePatch, envLevel, harmonicsOf, waveCycle, toUnit, fromUnit, formatValue,
+  describePatch, envLevel, harmonicsOf, waveCycle, toUnit, fromUnit, formatValue, getPath, BASE_PATCH,
 } from './patch.js';
 import { FACTORY, USES } from './presets.js';
-import { h, panel, controlGroup, nextId } from './ui.js';
+import { h, panel, controlGroup, nextId, knob } from './ui.js';
 import { drawHarmonics, drawCycle, drawAdsr, drawFilterEditor } from './draw.js';
 import { saveFile, copyText } from './store.js';
 
@@ -29,9 +29,15 @@ const svgEl = (tag, attrs) => {
 };
 
 export function LabView(root, app) {
-  const bind = { get: () => app.patch, set: (path, v, phase) => app.setParam(path, v, phase) };
+  const bind = {
+    get: () => app.patch,
+    set: (path, v, phase) => app.setParam(path, v, phase),
+    // 노브를 두 번 누르면 고른 음색(없으면 기본 소리)의 값으로
+    defaultOf: (path) => getPath(app.findPreset(app.presetId)?.patch ?? BASE_PATCH, path),
+  };
   let use = 'all';
   let node = 'osc0';
+  let lastSource = app.patch.source;
 
   // =========================================================================
   // 위: 고르고 다듬기
@@ -77,31 +83,35 @@ export function LabView(root, app) {
       if (e) app.loadPreset(e);
     },
   }, '처음 소리로');
+  // 도우미 노브: 가운데(12시)가 지금 소리. 돌리기 시작한 순간의 소리를 기준으로 여러 값을 함께 움직인다.
+  const signedPct = (v) => {
+    const n = Math.round((v - 0.5) * 100);
+    return n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '±0';
+  };
   const macroState = {};
   const macroEls = MACROS.map((m) => {
-    const id = nextId('macro');
-    const input = h('input', { type: 'range', id, min: 0, max: 1000, value: 500, class: 'macro-range' });
-    const st = (macroState[m.id] = { input, base: null, startPos: 0.5, last: 0.5 });
-    input.addEventListener('input', () => {
-      const v = Number(input.value) / 1000;
+    const st = (macroState[m.id] = { base: null, startPos: 0.5, last: 0.5, knob: null });
+    const apply = (v, phase) => {
       if (!st.base) {
         st.base = app.patch;
         st.startPos = st.last;
       }
-      app.setPatch(applyMacro(st.base, m.id, 0.5 + v - st.startPos), { phase: 'input', keepMacros: true });
+      app.setPatch(applyMacro(st.base, m.id, 0.5 + v - st.startPos), { phase, keepMacros: true });
+      if (phase === 'change') {
+        st.last = v;
+        st.base = null;
+      }
+    };
+    st.knob = knob({
+      label: m.label, min: 0, max: 1, value: 0.5, bipolar: true, center: 0.5, size: 'lg', format: signedPct,
+      low: m.low, high: m.high, onInput: (v) => apply(v, 'input'), onChange: (v) => apply(v, 'change'), defaultValue: () => 0.5,
     });
-    input.addEventListener('change', () => {
-      st.last = Number(input.value) / 1000;
-      st.base = null;
-      app.setPatch(app.patch, { phase: 'change', keepMacros: true });
-    });
-    return h('div', { class: 'macro' },
-      h('label', { for: id }, m.label), input,
-      h('div', { class: 'macro-ends', 'aria-hidden': 'true' }, h('span', {}, m.low), h('span', {}, m.high)));
+    st.knob.dial.classList.add('macro-knob');
+    return st.knob.el;
   });
   const resetMacros = () => {
     for (const st of Object.values(macroState)) {
-      st.input.value = 500;
+      st.knob.set(0.5);
       st.last = 0.5;
       st.base = null;
     }
@@ -243,25 +253,19 @@ export function LabView(root, app) {
               h('button', { type: 'button', class: 'chip-btn', onclick: () => start(w) }, l)))),
         panel('한 주기 · 음정 · 두께', {},
           cyc,
-          ctl.add(`osc.${i}.octave`), ctl.add(`osc.${i}.semi`), ctl.add(`osc.${i}.detune`),
-          ctl.add(`osc.${i}.level`), ctl.add(`osc.${i}.unison`), ctl.add(`osc.${i}.spread`))),
+          ctl.knobs([`osc.${i}.octave`, `osc.${i}.semi`, `osc.${i}.detune`, `osc.${i}.level`, `osc.${i}.unison`, `osc.${i}.spread`]))),
       draw,
     };
   };
   editors.osc0 = oscEditor(0);
   editors.osc1 = oscEditor(1);
   editors.fm = { el: h('div', { class: 'node-grid' }, panel('FM · 숨소리', { hint: 'DX7 방식. 오실레이터 1의 음높이를 빠르게 흔들어 종·일렉피아노 소리를 만들어요' },
-    ctl.add('fm.amount'), ctl.seg('fm.ratio'), ctl.add('fm.decay'), ctl.add('fm.sustain'), ctl.add('noise'))) };
+    ctl.knobs(['fm.amount', 'fm.decay', 'fm.sustain', 'noise']), ctl.seg('fm.ratio'))) };
   editors.pluck = { el: h('div', { class: 'node-grid' }, panel('줄 뜯기 (물리 모델)', { hint: '지연선 안에서 줄 진동을 계산해요. 기타·하프·피치카토' },
-    ctl.add('pluck.bright'), ctl.add('pluck.decay'), ctl.add('pluck.pick'), ctl.add('pluck.body'))) };
-  const sampleInfo = h('p', { class: 'panel-hint' });
-  editors.sample = {
-    el: h('div', { class: 'node-grid' }, panel('샘플', {}, sampleInfo,
-      h('button', { type: 'button', class: 'primary', onclick: () => app.showTab('sampler') }, '샘플러에서 소리 고르기 →'))),
-    draw: () => {
-      sampleInfo.textContent = app.sample ? `${app.sample.name} · 기준 음 ${app.sample.rootName} · 루프 ${app.sample.loopMode === 'off' ? '없음' : '있음'}` : '아직 샘플이 없어요. 샘플러에서 파일·데모 소리·녹음을 불러오세요.';
-    },
-  };
+    ctl.knobs(['pluck.bright', 'pluck.decay', 'pluck.pick', 'pluck.body']))) };
+  // 샘플러는 따로 탭이 아니라 '샘플' 상자를 누르면 여기 열린다 (app.js 가 채움)
+  const sampleSlot = h('div', { class: 'sample-slot' });
+  editors.sample = { el: sampleSlot, draw: () => app.emit('show:sampler') };
 
   // ---- 필터: 끄는 곡선 ----
   const qSpec = PARAMS['filter.q'];
@@ -328,7 +332,7 @@ export function LabView(root, app) {
     canvas.addEventListener('pointerup', end);
     canvas.addEventListener('pointercancel', () => { grab = null; });
     return {
-      el: panel(title, { hint }, canvas, read, ctl.add(`${key}.a`), ctl.add(`${key}.d`), ctl.add(`${key}.s`), ctl.add(`${key}.r`)),
+      el: panel(title, { hint }, canvas, read, ctl.knobs([`${key}.a`, `${key}.d`, `${key}.s`, `${key}.r`])),
       draw,
     };
   };
@@ -337,7 +341,7 @@ export function LabView(root, app) {
   editors.filter = {
     el: h('div', { class: 'node-grid' },
       panel('필터', { hint: '금색 점을 끌어요. 가로는 차단 주파수, 세로는 레조넌스' },
-        fCanvas, fRead, ctl.seg('filter.type'), ctl.add('filter.cutoff'), ctl.add('filter.q'), ctl.add('filter.env'), ctl.add('filter.keytrack')),
+        fCanvas, fRead, ctl.seg('filter.type'), ctl.knobs(['filter.cutoff', 'filter.q', 'filter.env', 'filter.keytrack'])),
       filterEnv.el),
     draw: () => {
       drawFilterEditor(fCanvas, app.patch.filter, toUnit(qSpec, app.patch.filter.q));
@@ -345,12 +349,11 @@ export function LabView(root, app) {
       filterEnv.draw();
     },
   };
-  editors.amp = { el: h('div', { class: 'node-grid' }, ampEnv.el, panel('연주', {}, ctl.add('mono'), ctl.add('glide'), ctl.add('volume'))), draw: ampEnv.draw };
+  editors.amp = { el: h('div', { class: 'node-grid' }, ampEnv.el, panel('연주', {}, ctl.add('mono'), ctl.knobs(['glide', 'volume']))), draw: ampEnv.draw };
   editors.lfo = { el: h('div', { class: 'node-grid' }, panel('LFO (느린 흔들림)', { hint: '비브라토·와우·트레몰로. 늦게 시작하면 바이올린처럼 자연스러워요' },
-    ctl.seg('lfo.target'), ctl.add('lfo.rate'), ctl.add('lfo.depth'), ctl.add('lfo.delay'))) };
+    ctl.seg('lfo.target'), ctl.knobs(['lfo.rate', 'lfo.depth', 'lfo.delay']))) };
   editors.fx = { el: h('div', { class: 'node-grid' }, panel('이펙트', { hint: '딜레이 간격은 루퍼의 BPM 을 따라요' },
-    ctl.add('fx.drive'), ctl.add('fx.chorus'), ctl.add('fx.delay'), ctl.seg('fx.delayBeats'), ctl.add('fx.feedback'),
-    ctl.add('fx.reverb'), ctl.add('fx.size'))) };
+    ctl.knobs(['fx.drive', 'fx.chorus', 'fx.delay', 'fx.feedback', 'fx.reverb', 'fx.size']), ctl.seg('fx.delayBeats'))) };
 
   const sourceSeg = ctl.seg('source', { label: '소리 재료' });
   const detail = h('section', { class: 'lab-detail', 'aria-labelledby': 'lab-detail-h' },
@@ -401,6 +404,11 @@ export function LabView(root, app) {
   function renderDetail() {
     const p = app.patch;
     const sourceNodes = p.source === 'synth' ? ['osc0', 'osc1', 'fm'] : [p.source];
+    // 소리 재료를 바꾸면 그 재료의 상자를 바로 연다 (샘플이면 샘플러)
+    if (p.source !== lastSource) {
+      lastSource = p.source;
+      node = sourceNodes[0];
+    }
     if (!sourceNodes.includes(node) && !['filter', 'amp', 'fx', 'lfo'].includes(node)) node = sourceNodes[0];
     renderFlow();
     const ed = editors[node];
@@ -426,9 +434,19 @@ export function LabView(root, app) {
 
   app.on('patch', sync);
   app.on('presets', renderPick);
-  app.on('sample', () => { renderFlow(); editors.sample.draw(); });
+  app.on('sample', () => renderFlow());
   app.on('resize', () => editors[node]?.draw?.());
   app.on('show:lab', () => requestAnimationFrame(() => sync({ keepMacros: true })));
   sync();
-  return { sync };
+  return {
+    sync,
+    sampleSlot,
+    /** 다른 곳(옛 #sampler 주소 등)에서 샘플 편집을 바로 열 때 */
+    openSample() {
+      if (app.patch.source !== 'sample') app.setParam('source', 'sample', 'change');
+      node = 'sample';
+      renderDetail();
+      detail.scrollIntoView?.({ block: 'start' });
+    },
+  };
 }

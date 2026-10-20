@@ -1,5 +1,5 @@
 // 루퍼 화면: 박에 맞춰 도는 4트랙. 트랙마다 음색이 따로 있고, 연주를 음표로 기억해 겹쳐 쌓는다.
-import { h, panel, nextId } from './ui.js';
+import { h, panel, nextId, knob } from './ui.js';
 import { drawRoll } from './draw.js';
 import { Instrument } from './engine.js';
 import { LooperState, METERS, QUANTIZE, loopClock, barBeat, eventsInWindow, exampleLoop } from './looper.js';
@@ -55,7 +55,11 @@ export function LooperView(root, app) {
     const sound = h('span', { class: 'track-sound' });
     const mute = h('button', { type: 'button', class: 'mini', 'aria-pressed': 'false', 'aria-label': `${track.name} 소리 끄기` }, 'M');
     const solo = h('button', { type: 'button', class: 'mini', 'aria-pressed': 'false', 'aria-label': `${track.name}만 듣기` }, 'S');
-    const vol = h('input', { type: 'range', min: 0, max: 100, value: Math.round(track.volume * 100), 'aria-label': `${track.name} 볼륨` });
+    const vol = knob({
+      label: '볼륨', ariaLabel: `${track.name} 볼륨`, min: 0, max: 1, value: track.volume, size: 'sm', tone: track.color === 'signal' ? 'signal' : 'brass',
+      format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => { track.volume = v; applySound(track); }, onChange: (v) => { track.volume = v; applySound(track); },
+      defaultValue: () => 0.8,
+    });
     const roll = h('canvas', { class: 'roll', 'aria-label': `${track.name} 음표` });
     const undo = h('button', { type: 'button', class: 'quiet small' }, '실행 취소');
     const clear = h('button', { type: 'button', class: 'quiet small' }, '지우기');
@@ -67,7 +71,6 @@ export function LooperView(root, app) {
     });
     mute.addEventListener('click', () => { track.muted = !track.muted; if (track.muted) track.inst?.allOff(undefined, true); render(); });
     solo.addEventListener('click', () => { track.solo = !track.solo; render(); });
-    vol.addEventListener('input', () => { track.volume = Number(vol.value) / 100; applySound(track); });
     undo.addEventListener('click', () => { if (L.undo(i)) { track.inst?.allOff(undefined, true); render(); } });
     clear.addEventListener('click', () => { L.clear(i); track.example = false; track.inst?.allOff(undefined, true); render(); });
     take.addEventListener('click', () => { setSound(track); render(); app.notice(`${track.name} 음색을 지금 음색 '${track.sound.label}'에 맞췄어요.`); });
@@ -77,7 +80,7 @@ export function LooperView(root, app) {
         h('div', { class: 'track-title' }, h('strong', {}, track.name), sound),
         h('div', { class: 'track-btns' }, mute, solo)),
       roll,
-      h('div', { class: 'track-foot' }, h('label', { class: 'vol' }, h('span', { class: 'label' }, '볼륨'), vol), take, undo, clear));
+      h('div', { class: 'track-foot' }, vol.el, take, undo, clear));
     return { el, arm, sound, mute, solo, roll, undo, clear, track };
   });
 

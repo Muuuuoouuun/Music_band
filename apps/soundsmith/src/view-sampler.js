@@ -1,6 +1,6 @@
 // 샘플러 화면: 소리 가져오기(파일·마이크·데모·지금 음색 굽기), 시작/끝·루프 지점 끌기, 이음새 보기,
 // 기준 음·미세 조정(튜닝), 루프 방식, 크로스페이드, SFZ 악기 내보내기.
-import { h, panel, nextId } from './ui.js';
+import { h, panel, nextId, knob } from './ui.js';
 import { drawSample, drawSeam } from './draw.js';
 import { peaks, trimSilence, detectPitch, findLoop, upwardZeroCrossings, encodeWav, sfzText, demoSample, toMono } from './sample.js';
 import { noteName } from './tuning.js';
@@ -59,14 +59,18 @@ export function SamplerView(root, app) {
   const info = h('dl', { class: 'facts' });
 
   const rootSel = h('select', { id: nextId('root') }, ...Array.from({ length: 73 }, (_, i) => i + 24).map((m) => h('option', { value: m }, noteName(m))));
-  const fineId = nextId('fine');
-  const fine = h('input', { type: 'range', id: fineId, min: -50, max: 50, step: 1 });
-  const fineOut = h('output', { for: fineId });
+  const centStr = (v) => `${v > 0 ? '+' : v < 0 ? '−' : '±'}${Math.abs(v)} cent`;
+  const fine = knob({
+    label: '미세 조정', min: -50, max: 50, step: 1, format: centStr,
+    onChange: (v) => update((s) => { s.fine = v; }),
+    defaultValue: () => (app.sample?.detected ? Math.round(app.sample.detected.cents) : 0),
+  });
   const modeBtns = LOOP_MODES.map((m) => h('button', { type: 'button', class: 'seg-btn', 'aria-pressed': 'false', title: m.hint, onclick: () => update((s) => { s.loopMode = m.id; }) }, m.label));
   const modeHint = h('p', { class: 'panel-hint' });
-  const xfId = nextId('xf');
-  const xfade = h('input', { type: 'range', id: xfId, min: 0, max: 200, step: 1 });
-  const xfOut = h('output', { for: xfId });
+  const xfade = knob({
+    label: '크로스페이드', min: 0, max: 200, step: 1, format: (v) => `${v} ms`,
+    onChange: (v) => update((s) => { s.xfadeMs = v; }), defaultValue: () => 30,
+  });
   const useBtn = h('button', { type: 'button', class: 'primary' }, '이 샘플로 건반 연주');
   const exportBtn = h('button', { type: 'button' }, 'SFZ 악기 내보내기 (.zip)');
 
@@ -84,7 +88,7 @@ export function SamplerView(root, app) {
     panel('튜닝', { hint: '샘플이 실제로 어떤 음인지. 감지한 값을 넣어 두면 건반을 누른 음 그대로 납니다.' },
       info,
       h('div', { class: 'ctl' }, h('label', { for: rootSel.id }, '기준 음'), h('span'), rootSel),
-      h('div', { class: 'ctl' }, h('label', { for: fineId }, '미세 조정'), fineOut, fine),
+      h('div', { class: 'knobs' }, fine.el),
       h('div', { class: 'btn-row' }, h('button', {
         type: 'button', onclick: () => update((s) => {
           s.detected = detectPitch(s.data, s.sr, { start: s.start, end: s.end });
@@ -94,7 +98,7 @@ export function SamplerView(root, app) {
     panel('재생 방식', {},
       h('div', { class: 'ctl ctl-seg' }, h('span', { class: 'label' }, '루프'), h('div', { class: 'seg', role: 'group', 'aria-label': '루프 방식' }, ...modeBtns)),
       modeHint,
-      h('div', { class: 'ctl' }, h('label', { for: xfId }, '이음새 크로스페이드'), xfOut, xfade),
+      h('div', { class: 'knobs' }, xfade.el),
       h('div', { class: 'btn-row' }, useBtn, exportBtn)));
 
   root.append(
@@ -110,7 +114,7 @@ export function SamplerView(root, app) {
     app.setSample(s);
     if (use && app.patch.source !== 'sample') {
       app.setParam('source', 'sample', 'change');
-      app.notice(`'${s.name}' 샘플을 건반에 걸었어요. 실험실의 소리 재료가 '샘플'로 바뀌었어요.`);
+      app.notice(`'${s.name}' 샘플을 건반에 걸었어요. 소리 재료가 '샘플'로 바뀌었어요.`);
     }
   };
   fileInput.addEventListener('change', async () => {
@@ -190,12 +194,6 @@ export function SamplerView(root, app) {
     app.setSample(s);
   }
   rootSel.addEventListener('change', () => update((s) => { s.root = Number(rootSel.value); }));
-  fine.addEventListener('input', () => {
-    fineOut.textContent = `${Number(fine.value) > 0 ? '+' : ''}${fine.value} cent`;
-  });
-  fine.addEventListener('change', () => update((s) => { s.fine = Number(fine.value); }));
-  xfade.addEventListener('input', () => { xfOut.textContent = `${xfade.value} ms`; });
-  xfade.addEventListener('change', () => update((s) => { s.xfadeMs = Number(xfade.value); }));
   useBtn.addEventListener('click', () => {
     app.setParam('source', 'sample', 'change');
     app.notice('건반이 이 샘플을 연주해요.');
@@ -308,10 +306,8 @@ export function SamplerView(root, app) {
       h('dt', {}, '감지한 음'), h('dd', {}, d ? `${noteName(d.note)} · ${d.hz.toFixed(1)} Hz · ${d.cents >= 0 ? '+' : ''}${d.cents.toFixed(0)} cent · 확신 ${Math.round(d.clarity * 100)}%` : '음높이를 찾지 못함 (타악기·잡음)'),
       h('dt', {}, '루프'), h('dd', {}, s.loopMode === 'off' ? '없음' : `${sec(s.loopStart - s.start)} → ${sec(s.loopEnd - s.start)} (${sec(s.loopEnd - s.loopStart)})`));
     rootSel.value = String(s.root);
-    fine.value = String(s.fine);
-    fineOut.textContent = `${s.fine > 0 ? '+' : ''}${s.fine} cent`;
-    xfade.value = String(s.xfadeMs);
-    xfOut.textContent = `${s.xfadeMs} ms`;
+    fine.set(s.fine);
+    xfade.set(s.xfadeMs);
     modeBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(LOOP_MODES[i].id === s.loopMode)));
     modeHint.textContent = LOOP_MODES.find((m) => m.id === s.loopMode).hint;
     const cost = app.bakedSample?.seamCost;

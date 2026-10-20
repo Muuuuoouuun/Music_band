@@ -1,6 +1,6 @@
 // 튜닝 화면: 기준음(A4), 조옮김·미세 조정, 음률과 기준 조, 음마다 cent, 옥타브 늘이기,
 // 평균율과 번갈아 듣기, 마이크 튜너, Scala 주고받기.
-import { h, panel, nextId, chipButton } from './ui.js';
+import { h, panel, nextId, chipButton, knob } from './ui.js';
 import { drawTuningBars, drawNeedle } from './draw.js';
 import { A4_PRESETS, NOTE_NAMES, TEMPERAMENTS, makeTuner, noteName, offsets, parseScala, degreesToCustom, exportScala } from './tuning.js';
 import { detectPitch } from './sample.js';
@@ -12,21 +12,24 @@ export function TuningView(root, app) {
   const set = (patch) => app.setTuning({ ...app.tuning, ...patch });
 
   // ---- 기준음 ----
-  const a4Id = nextId('a4');
-  const a4 = h('input', { type: 'range', id: a4Id, min: 4150, max: 4660, step: 1 });
-  const a4Out = h('output', { for: a4Id, class: 'big-readout' });
-  a4.addEventListener('input', () => set({ a4: Number(a4.value) / 10 }));
+  const a4Out = h('output', { class: 'big-readout', 'aria-live': 'polite' });
+  const a4 = knob({
+    label: 'A4', min: 415, max: 466, step: 0.1, value: app.tuning.a4, format: (v) => `${v.toFixed(1)} Hz`,
+    onInput: (v) => set({ a4: Math.round(v * 10) / 10 }), onChange: (v) => set({ a4: Math.round(v * 10) / 10 }), defaultValue: () => 440,
+  });
+  a4.el.classList.add('knob-novalue'); // 옆의 큰 숫자가 값을 보여 줌
   const a4Chips = A4_PRESETS.map((p) => chipButton(`${p.hz}`, () => set({ a4: p.hz }), { title: p.label, dataset: { hz: p.hz } }));
 
   const trOut = h('output', { class: 'step-out' });
-  const fineId = nextId('fine');
-  const fine = h('input', { type: 'range', id: fineId, min: -50, max: 50, step: 1 });
-  const fineOut = h('output', { for: fineId });
-  fine.addEventListener('input', () => set({ fine: Number(fine.value) }));
-  const stretchId = nextId('stretch');
-  const stretch = h('input', { type: 'range', id: stretchId, min: 0, max: 30, step: 1 });
-  const stretchOut = h('output', { for: stretchId });
-  stretch.addEventListener('input', () => set({ stretch: Number(stretch.value) / 10 }));
+  const centStr = (v) => `${v > 0 ? '+' : v < 0 ? '−' : '±'}${Math.abs(v)} cent`;
+  const fine = knob({
+    label: '전체 미세 조정', min: -50, max: 50, step: 1, value: app.tuning.fine, format: centStr,
+    onInput: (v) => set({ fine: v }), onChange: (v) => set({ fine: v }), defaultValue: () => 0,
+  });
+  const stretch = knob({
+    label: '옥타브 늘이기', min: 0, max: 3, step: 0.1, value: app.tuning.stretch, format: (v) => `${v.toFixed(1)} cent/oct`,
+    onInput: (v) => set({ stretch: Math.round(v * 10) / 10 }), onChange: (v) => set({ stretch: Math.round(v * 10) / 10 }), defaultValue: () => 0,
+  });
 
   // ---- 음률 ----
   const rootSel = h('select', { id: nextId('root') }, ...NOTE_NAMES.map((n, i) => h('option', { value: i }, n)));
@@ -174,14 +177,13 @@ export function TuningView(root, app) {
 
   root.append(h('div', { class: 'tuning-layout' },
     panel('기준음', { hint: '모든 소리(신스·줄·샘플·루퍼)가 이 값을 따라요.' },
-      h('div', { class: 'a4' }, h('label', { for: a4Id, class: 'label' }, 'A4'), a4Out), a4,
+      h('div', { class: 'a4' }, a4.el, a4Out),
       h('div', { class: 'chip-row' }, ...a4Chips),
       h('div', { class: 'ctl' }, h('span', { class: 'label' }, '조옮김'), trOut,
         h('div', { class: 'stepper' },
           h('button', { type: 'button', class: 'icon-btn', 'aria-label': '반음 내리기', onclick: () => set({ transpose: app.tuning.transpose - 1 }) }, '−'),
           h('button', { type: 'button', class: 'icon-btn', 'aria-label': '반음 올리기', onclick: () => set({ transpose: app.tuning.transpose + 1 }) }, '+'))),
-      h('div', { class: 'ctl' }, h('label', { for: fineId }, '전체 미세 조정'), fineOut, fine),
-      h('div', { class: 'ctl' }, h('label', { for: stretchId }, '옥타브 늘이기'), stretchOut, stretch),
+      h('div', { class: 'knobs' }, fine.el, stretch.el),
       h('p', { class: 'panel-hint' }, '피아노 조율사처럼 높은 음은 조금 높게, 낮은 음은 조금 낮게 (옥타브당 cent).')),
     panel('음률', { cls: 'span-2', hint: '같은 C 장3화음도 음률마다 3도의 맑기가 달라요. 기준 조를 연주할 곡의 조에 맞추세요.' },
       h('div', { class: 'ctl' }, h('label', { for: rootSel.id }, '기준 조'), h('span'), rootSel),
@@ -213,15 +215,13 @@ export function TuningView(root, app) {
 
   function sync() {
     const t = app.tuning;
-    a4.value = String(Math.round(t.a4 * 10));
+    a4.set(t.a4);
     a4Out.textContent = `${t.a4.toFixed(1)} Hz`;
     a4Chips.forEach((c) => c.setAttribute('aria-pressed', String(Number(c.dataset.hz) === t.a4)));
     const sign = (v) => (v > 0 ? `+${v}` : v < 0 ? `−${-v}` : '±0');
     trOut.textContent = t.transpose ? `${sign(t.transpose)} (C 를 누르면 ${NOTE_NAMES[((t.transpose % 12) + 12) % 12]})` : '±0';
-    fine.value = String(t.fine);
-    fineOut.textContent = `${sign(t.fine)} cent`;
-    stretch.value = String(Math.round(t.stretch * 10));
-    stretchOut.textContent = `${t.stretch.toFixed(1)} cent/oct`;
+    fine.set(t.fine);
+    stretch.set(t.stretch);
     rootSel.value = String(t.root);
     tempCards.forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.id === t.temperament)));
     const off = offsets(t);

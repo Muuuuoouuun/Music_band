@@ -137,6 +137,22 @@ export function StageView(root, app) {
   const lInfo = h('span', { class: 'strip-info' });
   lPlay.addEventListener('click', () => (app.looper.info().playing ? app.looper.stop() : app.looper.play()));
   lRec.addEventListener('click', () => app.looper.toggleRecord());
+  // 루퍼는 따로 탭이 아니라 이 줄을 펼치면 트랙 4개 전체가 나온다 (app.js 가 looperSlot 을 채움)
+  const strip = h('div', { class: 'strip', 'aria-label': '루퍼' }, lPlay, lRec, lPos, lBars, lInfo);
+  const looperSlot = h('div', { class: 'looper-slot', hidden: true });
+  const looperWrap = h('section', { class: 'looper-wrap', 'aria-label': '루퍼 트랙', hidden: true },
+    h('div', { class: 'looper-head' },
+      h('button', { type: 'button', class: 'stage-btn small', onclick: () => setLooperOpen(false) }, '한 줄로 접기 ▴')),
+    looperSlot);
+  const openBtn = h('button', { type: 'button', class: 'stage-btn small', onclick: () => setLooperOpen(true) }, '트랙 펼치기 ▾');
+  strip.append(openBtn);
+  function setLooperOpen(on) {
+    strip.hidden = on;
+    looperWrap.hidden = !on;
+    looperSlot.hidden = !on;
+    if (on) app.emit('show:looper');
+    else renderStrip();
+  }
 
   const setEditor = h('section', { class: 'panel set-editor', 'aria-label': '세트 편집' });
 
@@ -148,7 +164,8 @@ export function StageView(root, app) {
       h('section', { class: 'stage-pads', 'aria-label': '음색 패드' },
         h('div', { class: 'stage-head' }, h('h2', {}, '음색 패드 · 숫자 키 1–8'), editPadsBtn),
         padsGrid,
-        h('div', { class: 'strip', 'aria-label': '루퍼' }, lPlay, lRec, lPos, lBars, lInfo)),
+        strip,
+        looperWrap),
       h('aside', { class: 'stage-side', 'aria-label': '연주 조절' },
         h('div', { class: 'stage-head' }, h('h2', {}, '손가락으로 밀기'), xyRead),
         xyPad,
@@ -283,5 +300,12 @@ export function StageView(root, app) {
       choose(entryFor(st.pads[k - 1]));
     }
   });
-  return { render, selectSong, pads: st.pads, assignPad(k, id) { st.pads[k] = id; persist(); renderPads(); } };
+  return {
+    render,
+    selectSong,
+    pads: st.pads,
+    looperSlot,
+    openLooper: () => setLooperOpen(true),
+    assignPad(k, id) { st.pads[k] = id; persist(); renderPads(); },
+  };
 }

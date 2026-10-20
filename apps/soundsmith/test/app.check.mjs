@@ -81,7 +81,8 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   await shot('lab');
   r.labOverflow = await overflow();
   const c0 = (await S(page)).cutoff;
-  await page.locator('.macro-range').first().fill('900');
+  await page.locator('.macro-knob').first().focus();
+  for (let i = 0; i < 3; i++) await page.keyboard.press('PageUp');
   r.macroBrighter = (await S(page)).cutoff > c0;
   const n0 = (await S(page)).name;
   await page.click('text=랜덤 만들기');
@@ -111,6 +112,20 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   await page.mouse.up();
   const f1 = await S(page);
   r.filterDrag = f1.cutoff !== f0.cutoff && f1.q > f0.q;
+  // 노브: 위로 끌면 커지고, 두 번 누르면 고른 음색의 값으로
+  const kn = page.getByRole('slider', { name: '차단 주파수' });
+  await kn.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  const kb = await kn.boundingBox();
+  const k0 = (await S(page)).cutoff;
+  await page.mouse.move(kb.x + kb.width / 2, kb.y + kb.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(kb.x + kb.width / 2, kb.y + kb.height / 2 - 60, { steps: 5 });
+  await page.mouse.up();
+  const k1 = (await S(page)).cutoff;
+  await kn.dblclick();
+  const k2 = (await S(page)).cutoff;
+  const presetCutoff = await page.evaluate(() => window.soundsmith.findPreset(window.soundsmith.presetId)?.patch.filter.cutoff ?? null);
+  r.knob = { up: k1 > k0, reset: presetCutoff == null || Math.abs(k2 - presetCutoff) < 1e-6 };
   r.labDetailOverflow = await overflow();
   // 패드·루퍼로 보내기
   await page.click('text=무대 패드에 올리기');
@@ -118,8 +133,8 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   await page.click('text=루퍼로 보내기');
   r.trackSound = await page.evaluate(() => window.soundsmith.looper.state.tracks[3].sound?.label === window.soundsmith.patch.name);
 
-  // ---- 샘플러 ----
-  await page.click('.tab[data-tab="sampler"]');
+  // ---- 샘플러 (실험실의 '샘플' 상자) ----
+  await page.locator('.lab-detail .seg-btn', { hasText: /^샘플$/ }).click();
   await page.click('text=데모 소리');
   await page.waitForTimeout(300);
   r.sample = await page.evaluate(() => ({ root: window.soundsmith.sample.rootName, source: window.soundsmith.patch.source }));
@@ -130,23 +145,26 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   r.samplerOverflow = await overflow();
   await shot('sampler');
 
-  // ---- 루퍼 ----
-  await page.click('.tab[data-tab="looper"]');
-  await page.click('#view-looper >> text=▶ 재생');
+  // ---- 루퍼 (예배 무대에서 펼치기) ----
+  await page.click('.tab[data-tab="stage"]');
+  await page.click('text=트랙 펼치기 ▾');
+  await page.click('.looper-slot >> text=▶ 재생');
   await page.waitForTimeout(900);
-  await page.click('#view-looper .transport-btn.rec');
+  await page.click('.looper-slot .transport-btn.rec');
   for (const k of ['a', 'g']) {
     await page.keyboard.down(k);
     await page.waitForTimeout(250);
     await page.keyboard.up(k);
   }
-  await page.click('#view-looper .transport-btn.rec');
+  await page.click('.looper-slot .transport-btn.rec');
   r.recorded = await page.evaluate(() => window.soundsmith.looper.state.tracks[3].notes.map((n) => n.midi).join());
   await page.locator('.track').nth(3).locator('text=실행 취소').click();
   r.afterUndo = await page.evaluate(() => window.soundsmith.looper.state.tracks[3].notes.length);
   r.looperOverflow = await overflow();
   await shot('looper');
-  await page.click('#view-looper >> text=■ 정지');
+  await page.click('.looper-slot >> text=■ 정지');
+  await page.click('text=한 줄로 접기 ▴');
+  r.tabs = await page.locator('.tab').count();
 
   // ---- 튜닝 ----
   await page.click('.tab[data-tab="tuning"]');
@@ -184,6 +202,8 @@ for (const [name, r] of Object.entries(results)) {
   expect(r.audition >= 4, '들어 보기');
   expect(r.wave0 === 'custom', '배음 그리기');
   expect(r.filterDrag, '필터 끌기');
+  expect(r.knob.up && r.knob.reset, `노브 ${JSON.stringify(r.knob)}`);
+  expect(r.tabs === 3, '탭 3개');
   expect(r.padAssigned, '패드에 올리기');
   expect(r.trackSound, '루퍼로 보내기');
   expect(r.sample.root === 'A2' && r.sample.source === 'sample', '데모 샘플');

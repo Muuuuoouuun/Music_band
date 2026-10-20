@@ -14,7 +14,7 @@ import { SamplerView } from './view-sampler.js';
 import { LooperView } from './view-looper.js';
 import { TuningView } from './view-tuning.js';
 
-const TABS = ['stage', 'lab', 'sampler', 'looper', 'tuning'];
+const TABS = ['stage', 'lab', 'tuning'];
 
 class App {
   constructor() {
@@ -140,7 +140,7 @@ class App {
 
   sendToTrack(i) {
     this.looper.sendSound(i);
-    this.notice(`루퍼 트랙 ${i + 1}에 '${this.patch.name}' 음색을 넣었어요. 루퍼에서 그 트랙을 골라 녹음하세요.`, 'good');
+    this.notice(`루퍼 트랙 ${i + 1}에 '${this.patch.name}' 음색을 넣었어요. 예배 무대의 루퍼에서 '트랙 펼치기'를 누르고 그 트랙을 골라 녹음하세요.`, 'good');
   }
 
   rename(name) {
@@ -252,6 +252,10 @@ class App {
 
   // ---- 화면 ----
   showTab(id) {
+    // 합쳐진 예전 탭 주소: 샘플러는 실험실의 '샘플' 상자, 루퍼는 예배 무대에서 펼친 트랙
+    const legacy = id;
+    if (id === 'sampler' || id === 'synth') id = 'lab';
+    if (id === 'looper') id = 'stage';
     if (!TABS.includes(id)) id = 'stage';
     this.tab = id;
     document.body.dataset.tab = id;
@@ -259,6 +263,8 @@ class App {
     for (const v of document.querySelectorAll('.view')) v.hidden = v.dataset.view !== id;
     try { history.replaceState(null, '', `#${id}`); } catch { /* 액자 안에서는 무시 */ }
     this.emit(`show:${id}`);
+    if (legacy === 'sampler') this.lab.openSample();
+    if (legacy === 'looper') this.stage.openLooper();
   }
 
   renderHeader() {
@@ -278,10 +284,10 @@ class App {
 const app = new App();
 window.soundsmith = app; // 브라우저 검사용
 
-LabView(document.getElementById('view-lab'), app);
-SamplerView(document.getElementById('view-sampler'), app);
-app.looper = LooperView(document.getElementById('view-looper'), app);
+app.lab = LabView(document.getElementById('view-lab'), app);
+SamplerView(app.lab.sampleSlot, app);
 app.stage = StageView(document.getElementById('view-stage'), app);
+app.looper = LooperView(app.stage.looperSlot, app);
 TuningView(document.getElementById('view-tuning'), app);
 app.keyboard = new Keyboard(document.getElementById('dock'), {
   noteOn: (m, v) => app.noteOn(m, v),
