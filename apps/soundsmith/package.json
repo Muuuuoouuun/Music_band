@@ -1,0 +1,11 @@
+{
+  "name": "soundsmith",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node test/engine.check.mjs && node test/app.check.mjs",
+    "start": "python3 -m http.server 8010 --bind 127.0.0.1"
+  },
+  "devDependencies": { "playwright": "1.58.2" }
+}

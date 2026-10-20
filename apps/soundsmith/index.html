@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#15140f">
+  <title>음색 공방</title>
+  <meta name="claude:viewport-fit-sides" content="cover">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="top">
+      <div class="brand">
+        <h1>음색 공방</h1>
+        <p class="eyebrow">Soundsmith · 신스 · 샘플 · 루프 · 튜닝</p>
+      </div>
+      <div class="now">
+        <span class="now-label">지금 음색</span>
+        <strong id="now-patch">워십 패드</strong>
+        <span class="chip" id="now-tuning">A4 440 · 평균율</span>
+      </div>
+      <canvas class="scope" id="scope" width="240" height="56" aria-label="출력 파형"></canvas>
+      <div class="power">
+        <button type="button" class="power-btn" id="power" aria-pressed="false">
+          <span class="led" aria-hidden="true"></span><span id="power-label">소리 켜기</span>
+        </button>
+        <label class="master">
+          <span class="label">마스터</span>
+          <input type="range" id="master" min="0" max="100" value="85" aria-label="마스터 볼륨">
+        </label>
+        <button type="button" class="quiet" id="panic" title="울리고 있는 소리를 모두 멈춤">모두 멈춤</button>
+      </div>
+    </header>
+
+    <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
+
+    <nav class="tabs" aria-label="화면">
+      <button type="button" class="tab" data-tab="synth" aria-controls="view-synth">음색 만들기</button>
+      <button type="button" class="tab" data-tab="sampler" aria-controls="view-sampler">샘플러 · 루프 지점</button>
+      <button type="button" class="tab" data-tab="looper" aria-controls="view-looper">루퍼</button>
+      <button type="button" class="tab" data-tab="tuning" aria-controls="view-tuning">튜닝</button>
+    </nav>
+
+    <main>
+      <section class="view" id="view-synth" data-view="synth" aria-label="음색 만들기"></section>
+      <section class="view" id="view-sampler" data-view="sampler" aria-label="샘플러" hidden></section>
+      <section class="view" id="view-looper" data-view="looper" aria-label="루퍼" hidden></section>
+      <section class="view" id="view-tuning" data-view="tuning" aria-label="튜닝" hidden></section>
+    </main>
+  </div>
+
+  <footer class="dock" id="dock" aria-label="건반"></footer>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>
