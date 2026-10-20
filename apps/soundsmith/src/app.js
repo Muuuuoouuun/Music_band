@@ -1,4 +1,4 @@
-// 음색 공방: 화면·소리·저장을 잇는 곳. 음색(patch)·튜닝·샘플은 여기 한 곳에 있고,
+// 음색 공방: 화면·소리·저장을 잇는 곳. 음색(patch, 톤 포함)·튜닝·샘플은 여기 한 곳에 있고,
 // 화면들은 app.on('patch' | 'tuning' | 'sample' ...) 으로 바뀐 것을 듣는다.
 import { Studio, Instrument } from './engine.js';
 import { normalizePatch, setPath } from './patch.js';
@@ -12,9 +12,9 @@ import { StageView } from './view-stage.js';
 import { LabView } from './view-lab.js';
 import { SamplerView } from './view-sampler.js';
 import { LooperView } from './view-looper.js';
-import { TuningView } from './view-tuning.js';
+import { ToneView } from './view-tone.js';
 
-const TABS = ['stage', 'lab', 'tuning'];
+const TABS = ['stage', 'lab', 'tone'];
 
 class App {
   constructor() {
@@ -252,10 +252,12 @@ class App {
 
   // ---- 화면 ----
   showTab(id) {
-    // 합쳐진 예전 탭 주소: 샘플러는 실험실의 '샘플' 상자, 루퍼는 예배 무대에서 펼친 트랙
+    // 합쳐진 예전 탭 주소: 샘플러는 실험실의 '샘플' 상자, 루퍼는 예배 무대에서 펼친 트랙,
+    // 튜닝은 톤 맞추기 화면의 '음 높이 자세히'
     const legacy = id;
     if (id === 'sampler' || id === 'synth') id = 'lab';
     if (id === 'looper') id = 'stage';
+    if (id === 'tuning') id = 'tone';
     if (!TABS.includes(id)) id = 'stage';
     this.tab = id;
     document.body.dataset.tab = id;
@@ -265,6 +267,7 @@ class App {
     this.emit(`show:${id}`);
     if (legacy === 'sampler') this.lab.openSample();
     if (legacy === 'looper') this.stage.openLooper();
+    if (legacy === 'tuning') this.tone.openPitch();
   }
 
   renderHeader() {
@@ -288,7 +291,7 @@ app.lab = LabView(document.getElementById('view-lab'), app);
 SamplerView(app.lab.sampleSlot, app);
 app.stage = StageView(document.getElementById('view-stage'), app);
 app.looper = LooperView(app.stage.looperSlot, app);
-TuningView(document.getElementById('view-tuning'), app);
+app.tone = ToneView(document.getElementById('view-tone'), app);
 app.keyboard = new Keyboard(document.getElementById('dock'), {
   noteOn: (m, v) => app.noteOn(m, v),
   noteOff: (m) => app.noteOff(m),

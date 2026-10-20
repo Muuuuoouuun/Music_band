@@ -3,15 +3,17 @@
 //   음 하나(voice) ─ 오실레이터 ×겹치기 ─┐                    ┌ 트레몰로 ─ 볼륨 엔벨로프 ─┐
 //                  FM 변조기 ─→ 주파수   ├─ 섞기 ─ 필터 ──────┘                            │
 //                  노이즈 / 줄 / 샘플 ───┘    ↑ 필터 엔벨로프·LFO                           │
-//   악기(instrument) ← 음들 ─ 드라이브 ─ 코러스 ─┬─ 볼륨 ─→ 스튜디오 버스                 ←─┘
+//   악기(instrument) ← 음들 ─ 드라이브 ─ 코러스 ─┬─ 톤 EQ ─ 볼륨 ─→ 스튜디오 버스          ←─┘
 //                                               ├─ 딜레이(박에 맞춤, 되먹임) ─┤
 //                                               └─ 잔향(합성 홀) ─────────────┘
+//   톤 EQ = 로우컷 + 대역 6개 (톤 맞추기 탭). 효과까지 거친 소리 전체에 건다.
 //   스튜디오 버스 ─ 리미터 ─ 마스터 ─ 분석기(오실로스코프) ─ 스피커
 //
 // 루퍼 트랙마다 악기를 하나씩 따로 만들어 서로 다른 음색이 동시에 울린다.
 // 같은 Instrument 를 OfflineAudioContext 에 만들면 '지금 음색을 샘플로 굽기'가 된다.
 import { HARMONICS, envLevel } from './patch.js';
 import { makeTuner } from './tuning.js';
+import { FLAT_TONE, toneFilters } from './tone.js';
 
 const MAX_VOICES = 12;
 const clampHz = (f) => Math.min(20000, Math.max(20, f));
@@ -211,7 +213,19 @@ export class Instrument {
       this.postDrive.connect(d).connect(p).connect(this.chorusWet);
     }
     this.chorusWet.connect(this.fxBus);
-    this.fxBus.connect(this.volume);
+    // 톤 EQ: 마른 소리·딜레이·잔향이 모두 여기로 모인다
+    this.eqIn = gain(1);
+    this.eq = toneFilters(FLAT_TONE).map((f) => {
+      const n = ctx.createBiquadFilter();
+      n.type = f.type;
+      n.frequency.value = f.f;
+      // Web Audio 의 highpass Q 는 dB 단위
+      n.Q.value = f.type === 'highpass' ? 20 * Math.log10(f.q) : f.q;
+      n.gain.value = 0;
+      return n;
+    });
+    this.eq.reduce((from, n) => from.connect(n), this.eqIn).connect(this.volume);
+    this.fxBus.connect(this.eqIn);
     // 딜레이: 되먹임 고리 안에 저역통과 (반복될수록 어두워짐)
     this.delaySend = gain(0);
     this.echo = ctx.createDelay(4);
@@ -220,10 +234,10 @@ export class Instrument {
     this.echoTone.frequency.value = 4200;
     this.feedback = gain(0.35);
     this.fxBus.connect(this.delaySend).connect(this.echo).connect(this.echoTone).connect(this.feedback).connect(this.echo);
-    this.echoTone.connect(this.volume);
+    this.echoTone.connect(this.eqIn);
     this.reverbSend = gain(0);
     this.reverb = ctx.createConvolver();
-    this.fxBus.connect(this.reverbSend).connect(this.reverb).connect(this.volume);
+    this.fxBus.connect(this.reverbSend).connect(this.reverb).connect(this.eqIn);
     this.volume.connect(env.out);
     // LFO 하나를 세 곳(음정·필터·볼륨)으로 나눠 보낸다. 흔드는 곳을 바꾸면 깊이만 옮겨진다.
     this.lfo = ctx.createOscillator();
@@ -268,6 +282,10 @@ export class Instrument {
       this.irSize = p.fx.size;
       this.reverb.buffer = this.env.irFor(p.fx.size);
     }
+    toneFilters(p.tone).forEach((f, i) => {
+      smooth(this.eq[i].frequency, f.f);
+      smooth(this.eq[i].gain, f.gain);
+    });
     smooth(this.volume.gain, p.volume);
     smooth(this.lfo.frequency, p.lfo.rate);
     const depth = { pitch: p.lfo.depth * 50, filter: p.lfo.depth * 2400, amp: p.lfo.depth * 0.5 };
@@ -647,8 +665,8 @@ export class Studio {
   }
 }
 
-/** 지금 음색으로 한 음을 미리 연주해 AudioBuffer 로 (샘플러의 '음색 굽기', 테스트). */
-export async function renderNote(patch, { midi = 57, seconds = 3, hold = 2.2, tuning = {}, sample = null, sampleRate = 44100, dry = true } = {}) {
+/** 지금 음색으로 한 음(midi 가 배열이면 화음)을 미리 연주해 AudioBuffer 로 (샘플러의 '음색 굽기', 톤 재기, 테스트). */
+export async function renderNote(patch, { midi = 57, seconds = 3, hold = 2.2, tuning = {}, sample = null, sampleRate = 44100, dry = true, velocity = 0.8 } = {}) {
   const ctx = new OfflineAudioContext(2, Math.round(sampleRate * seconds), sampleRate);
   const irs = new Map();
   const env = {
@@ -663,7 +681,9 @@ export async function renderNote(patch, { midi = 57, seconds = 3, hold = 2.2, tu
   };
   const p = dry ? { ...patch, fx: { ...patch.fx, delay: 0, reverb: 0 } } : patch;
   const inst = new Instrument(env, p, sample);
-  inst.noteOn(midi, 0.8, 0.01);
-  inst.noteOff(midi, hold);
+  for (const m of [midi].flat()) {
+    inst.noteOn(m, velocity, 0.01);
+    inst.noteOff(m, hold);
+  }
   return ctx.startRendering();
 }

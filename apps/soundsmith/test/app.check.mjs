@@ -1,6 +1,7 @@
 // 브라우저에서 화면 전체를 눌러 보는 확인 (데스크톱·휴대폰 크기):
 // 예배 무대(패드·숫자 키·밝기×공간 판·다음 곡·루퍼 줄), 실험실(쓰임새·카드·도우미·배음 그리기·필터 끌기·
-// 패드/루퍼로 보내기), 샘플러 데모, 루퍼 녹음·실행 취소, 튜닝. 콘솔 오류나 가로 넘침이 있으면 실패.
+// 패드/루퍼로 보내기), 샘플러 데모, 루퍼 녹음·실행 취소, 톤 맞추기(재기·노브·말 버튼·톤 곡선 끌기·A/B·방·
+// 다른 음색을 레퍼런스로·제안대로 맞추기·톤 기록), 음 높이 자세히(튜닝). 콘솔 오류나 가로 넘침이 있으면 실패.
 // 실행: npm start 로 서버를 띄운 뒤 node test/app.check.mjs  (SHOTS=폴더 를 주면 화면을 저장)
 import { chromium, launchOptions } from './browser.mjs';
 
@@ -14,6 +15,24 @@ const boxOf = async (page, sel) => {
   await page.locator(sel).first().evaluate((el) => el.scrollIntoView({ block: 'center' }));
   return page.locator(sel).first().boundingBox();
 };
+// 시험용 음원: 8초짜리 스테레오 WAV (밝은 노이즈 + 화음)
+function testWav(seconds = 8, sr = 22050) {
+  const n = seconds * sr;
+  const buf = Buffer.alloc(44 + n * 4);
+  buf.write('RIFF', 0); buf.writeUInt32LE(36 + n * 4, 4); buf.write('WAVEfmt ', 8);
+  buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(2, 22); buf.writeUInt32LE(sr, 24);
+  buf.writeUInt32LE(sr * 4, 28); buf.writeUInt16LE(4, 32); buf.writeUInt16LE(16, 34); buf.write('data', 36); buf.writeUInt32LE(n * 4, 40);
+  let seed = 3;
+  for (let i = 0; i < n; i++) {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    const v = 0.15 * (seed / 2 ** 32 - 0.5) + 0.2 * Math.sin((2 * Math.PI * 262 * i) / sr) + 0.15 * Math.sin((2 * Math.PI * 392 * i) / sr);
+    const q = Math.round(Math.max(-1, Math.min(1, v)) * 32767);
+    buf.writeInt16LE(q, 44 + i * 4);
+    buf.writeInt16LE(q, 46 + i * 4);
+  }
+  return buf;
+}
+
 const S = (page) => page.evaluate(() => {
   const a = window.soundsmith;
   return { presetId: a.presetId, name: a.patch.name, cutoff: a.patch.filter.cutoff, reverb: a.patch.fx.reverb, q: a.patch.filter.q, wave0: a.patch.osc[0].wave, transpose: a.tuning.transpose, voices: a.live?.voiceCount ?? 0, sounding: a.live?.voices.size ?? 0, hold: a.keyboard.hold };
@@ -166,11 +185,60 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   await page.click('text=한 줄로 접기 ▴');
   r.tabs = await page.locator('.tab').count();
 
-  // ---- 튜닝 ----
-  await page.click('.tab[data-tab="tuning"]');
+  // ---- 톤 맞추기 ----
+  await page.click('.tab[data-tab="tone"]');
+  const T = () => page.evaluate(() => ({ ...window.soundsmith.patch.tone, reverb: window.soundsmith.patch.fx.reverb, ...window.soundsmith.tone.info() }));
+  await page.waitForFunction(() => window.soundsmith.tone.info().measured, null, { timeout: 15000 });
+  r.toneMeasured = (await T()).bands?.length === 6;
+  const bass = page.getByRole('slider', { name: '저음', exact: true });
+  await bass.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  await bass.focus();
+  await page.keyboard.press('PageDown');
+  r.toneKnob = (await T()).bass < 0;
+  await page.locator('.word-btn', { hasText: '더 반짝이게' }).click();
+  r.toneWord = (await T()).air > 0 && /반짝/.test(await page.textContent('.tone-why'));
+  const eb = await boxOf(page, '.tone-eq');
+  const b0 = (await T()).body;
+  await page.mouse.move(eb.x + eb.width * 0.6, eb.y + eb.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(eb.x + eb.width * 0.6, eb.y + eb.height * 0.2, { steps: 4 });
+  await page.mouse.up();
+  r.toneDrag = (await T()).body > b0;
+  await page.click('text=A → B 번갈아');
+  await page.waitForTimeout(300);
+  r.toneAB = await page.evaluate(() => window.soundsmith.studio.running);
+  await page.locator('.chip-btn[data-room="hall"]').click();
+  r.toneRoom = (await T()).reverb === 0.55;
+  await page.locator('.seg-btn[data-src="patch"]').click();
+  await page.selectOption('.ref-patch select', 'air-pad');
+  await page.click('text=이 음색을 레퍼런스로');
+  await page.waitForFunction(() => window.soundsmith.tone.info().ref?.name === '공기 패드', null, { timeout: 15000 });
+  r.toneRows = await page.locator('.match-table tbody tr').count();
+  const beforeMatch = await T();
+  await page.click('text=제안대로 맞추기');
+  const afterMatch = await T();
+  r.toneMatch = ['deep', 'bass', 'mud', 'body', 'clarity', 'air'].some((k) => afterMatch[k] !== beforeMatch[k]);
+  r.toneLog = await page.locator('.tone-log li').count();
+  await shot('tone');
+  r.toneOverflow = await overflow();
+  // 음원 파일을 레퍼런스로: 열고, 재고, 들어 보고, 멈춤
+  await page.locator('.seg-btn[data-src="file"]').click();
+  await page.setInputFiles('.ref-file input[type=file]', { name: '시험 음원.wav', mimeType: 'audio/wav', buffer: testWav() });
+  await page.waitForFunction(() => window.soundsmith.tone.info().ref?.kind === 'file', null, { timeout: 15000 });
+  r.refFile = await page.evaluate(() => {
+    const { ref, follow } = window.soundsmith.tone.info();
+    return { name: ref.name, follow, centroid: ref.centroid, overview: !document.querySelector('.ref-audio').hidden };
+  });
+  await page.click('text=▶ 레퍼런스 듣기');
+  await page.click('text=■ 멈춤');
+  await page.click('text=레퍼런스 지우기');
+
+  // ---- 음 높이 자세히 (예전 튜닝 화면) ----
+  await page.click('text=음 높이 자세히 ▸');
   await page.click('.chip-btn[data-hz="442"]');
   await page.click('.temp-card[data-id="werckmeister3"]');
   r.tuning = await page.evaluate(() => ({ a: window.soundsmith.studio.tuner.freq(69), t: window.soundsmith.tuning.temperament }));
+  r.pitchStrip = /A4 442\.0 Hz/.test(await page.textContent('.pitch-read'));
   r.tuningOverflow = await overflow();
   await shot('tuning');
   await page.close();
@@ -209,7 +277,18 @@ for (const [name, r] of Object.entries(results)) {
   expect(r.sample.root === 'A2' && r.sample.source === 'sample', '데모 샘플');
   expect(r.sampleVoice >= 1, '샘플 연주');
   expect(r.recorded === '60,67' && r.afterUndo === 0, `루퍼 녹음 ${r.recorded}/${r.afterUndo}`);
+  expect(r.toneMeasured, '톤 재기');
+  expect(r.toneKnob, '톤 노브');
+  expect(r.toneWord, '말 버튼');
+  expect(r.toneDrag, '톤 곡선 끌기');
+  expect(r.toneAB, 'A/B 듣기');
+  expect(r.toneRoom, '방 맞추기');
+  expect(r.toneRows === 6, `레퍼런스 표 ${r.toneRows}`);
+  expect(r.toneMatch, '제안대로 맞추기');
+  expect(r.toneLog >= 4, `톤 기록 ${r.toneLog}`);
+  expect(r.refFile.name === '시험 음원' && r.refFile.follow === 0.4 && r.refFile.overview && r.refFile.centroid > 200, `음원 레퍼런스 ${JSON.stringify(r.refFile)}`);
   expect(r.tuning.a === 442 && r.tuning.t === 'werckmeister3', '튜닝');
+  expect(r.pitchStrip, '음 높이 한 줄');
   for (const k of Object.keys(r).filter((x) => x.endsWith('Overflow'))) expect(r[k] <= 0, `${k}=${r[k]}`);
   if (bad.length) {
     console.error(name, '실패:', bad.join(', '));

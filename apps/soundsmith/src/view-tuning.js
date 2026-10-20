@@ -1,5 +1,5 @@
-// 튜닝 화면: 기준음(A4), 조옮김·미세 조정, 음률과 기준 조, 음마다 cent, 옥타브 늘이기,
-// 평균율과 번갈아 듣기, 마이크 튜너, Scala 주고받기.
+// 음 높이 자세히 (톤 맞추기 화면에서 펼침): 기준음(A4), 조옮김·미세 조정, 음률과 기준 조, 음마다 cent,
+// 옥타브 늘이기, 평균율과 번갈아 듣기, 마이크 튜너, Scala 주고받기.
 import { h, panel, nextId, chipButton, knob } from './ui.js';
 import { drawTuningBars, drawNeedle } from './draw.js';
 import { A4_PRESETS, NOTE_NAMES, TEMPERAMENTS, makeTuner, noteName, offsets, parseScala, degreesToCustom, exportScala } from './tuning.js';
@@ -208,6 +208,7 @@ export function TuningView(root, app) {
         }, '지금 튜닝 내보내기')))));
 
   function drawChart() {
+    if (chart.closest('[hidden]')) return;
     const off = offsets(app.tuning);
     const range = off.some((c) => Math.abs(c) > 30) ? 60 : 30;
     chartGeo = drawTuningBars(chart, off, NOTE_NAMES, range, activePc);
@@ -243,12 +244,12 @@ export function TuningView(root, app) {
 
   app.on('tuning', sync);
   app.on('resize', drawChart);
-  app.on('show:tuning', () => requestAnimationFrame(() => { sync(); drawNeedle(needle, tuner.cents); }));
   app.on('note', ({ midi, on }) => {
-    if (root.hidden) return;
+    if (root.closest('[hidden]')) return;
     activePc = on ? (((midi + app.tuning.transpose) % 12) + 12) % 12 : null;
     drawChart();
   });
   sync();
-  return { sync };
+  // 펼쳐서 보일 때 (캔버스 크기가 정해진 뒤) 다시 그린다
+  return { sync, shown: () => requestAnimationFrame(() => { sync(); drawNeedle(needle, tuner.cents); }) };
 }

@@ -1,6 +1,7 @@
-// 캔버스 그림: 엔벨로프, 필터 곡선, 파형 아이콘, 오실로스코프, 샘플 파형·루프 표시, 루퍼 롤, 튜닝 막대.
-// 색은 모두 style.css 의 토큰에서 읽는다.
+// 캔버스 그림: 엔벨로프, 필터 곡선, 파형 아이콘, 오실로스코프, 샘플 파형·루프 표시, 루퍼 롤, 튜닝 막대,
+// 톤(밝기 균형·톤 곡선). 색은 모두 style.css 의 토큰에서 읽는다.
 import { envLevel, releaseLevel } from './patch.js';
+import { TONE_BANDS, THIRDS, LOWCUT_OFF, toneResponse } from './tone.js';
 
 const tokens = {};
 export function color(name) {
@@ -467,4 +468,173 @@ export function drawFilterEditor(canvas, filter, qUnit) {
   g.fill();
   g.stroke();
   return { handle: [x, y] };
+}
+
+// ---------------------------------------------------------------------------
+// 톤 맞추기: 가로는 주파수(로그), 대역 6개를 띠로 칠하고 이름을 위에 쓴다.
+// ---------------------------------------------------------------------------
+
+const F_MIN = 31.5;
+const F_MAX = 20000;
+
+function toneFrame(canvas, pad) {
+  const { g, w, h } = fit(canvas);
+  const xOf = (f) => pad.l + (Math.log(f / F_MIN) / Math.log(F_MAX / F_MIN)) * (w - pad.l - pad.r);
+  const fOfX = (x) => F_MIN * (F_MAX / F_MIN) ** ((x - pad.l) / (w - pad.l - pad.r));
+  return { g, w, h, xOf, fOfX };
+}
+
+function toneZones(fr, pad, focus, labels) {
+  const { g, h, xOf } = fr;
+  g.font = `11px ${color('font-body')}`;
+  TONE_BANDS.forEach((b, i) => {
+    const x0 = xOf(b.lo);
+    const x1 = xOf(b.hi);
+    g.fillStyle = b.id === focus ? color('brass-wash') : i % 2 ? 'rgba(241, 235, 220, 0.035)' : 'rgba(0, 0, 0, 0)';
+    g.fillRect(x0, pad.t, x1 - x0, h - pad.t - pad.b);
+    if (!labels) return;
+    const tw = g.measureText(b.label).width;
+    if (tw > x1 - x0 - 2) return;
+    g.fillStyle = color(b.id === focus ? 'brass-hi' : 'muted');
+    g.fillText(b.label, (x0 + x1) / 2 - tw / 2, pad.t - 7);
+  });
+  g.font = `10px ${color('font-data')}`;
+  g.fillStyle = color('faint');
+  for (const [f, t] of [[50, '50'], [100, '100'], [200, '200'], [500, '500'], [1000, '1k'], [2000, '2k'], [5000, '5k'], [10000, '10k']]) {
+    const x = xOf(f);
+    g.fillText(t, x - g.measureText(t).width / 2, h - 4);
+  }
+}
+
+/**
+ * 밝기 균형: 1/3 옥타브마다 전체 대비 dB. now(지금, 금색 면), ref(레퍼런스, 청록 선), after(맞춘 뒤 예상, 점선).
+ * 돌려주는 값: 포인터 x → 대역 id
+ */
+export function drawToneSpectrum(canvas, { now = null, ref = null, after = null, focus = null } = {}) {
+  const pad = { l: 34, r: 10, t: 24, b: 18 };
+  const fr = toneFrame(canvas, pad);
+  const { g, w, h, xOf } = fr;
+  const top = 0;
+  const floor = -60;
+  const yOf = (d) => pad.t + (Math.min(top, Math.max(floor, d)) / floor) * (h - pad.t - pad.b);
+  toneZones(fr, pad, focus, true);
+  g.strokeStyle = color('grid');
+  g.lineWidth = 1;
+  g.font = `10px ${color('font-data')}`;
+  g.fillStyle = color('faint');
+  for (const d of [-12, -24, -36, -48]) {
+    const y = Math.round(yOf(d)) + 0.5;
+    g.beginPath();
+    g.moveTo(pad.l, y);
+    g.lineTo(w - pad.r, y);
+    g.stroke();
+    g.fillText(String(d), 2, y + 3);
+  }
+  const line = (third) => {
+    g.beginPath();
+    third.forEach((d, i) => {
+      const x = xOf(THIRDS[i]);
+      const y = yOf(d);
+      if (i) g.lineTo(x, y); else g.moveTo(x, y);
+    });
+  };
+  if (now) {
+    line(now);
+    g.lineTo(xOf(THIRDS.at(-1)), h - pad.b);
+    g.lineTo(xOf(THIRDS[0]), h - pad.b);
+    g.closePath();
+    g.fillStyle = color('brass-wash');
+    g.fill();
+    line(now);
+    g.strokeStyle = color('brass');
+    g.lineWidth = 2;
+    g.stroke();
+  }
+  if (ref) {
+    line(ref);
+    g.strokeStyle = color('signal');
+    g.lineWidth = 2;
+    g.stroke();
+  }
+  if (after) {
+    line(after);
+    g.setLineDash([5, 4]);
+    g.strokeStyle = color('fg');
+    g.lineWidth = 1.5;
+    g.stroke();
+    g.setLineDash([]);
+  }
+  return { bandAt: (x) => bandAtX(fr, x) };
+}
+
+function bandAtX(fr, x) {
+  const f = fr.fOfX(x);
+  return (TONE_BANDS.find((b) => f >= b.lo && f < b.hi) ?? (f < TONE_BANDS[0].lo ? TONE_BANDS[0] : TONE_BANDS.at(-1))).id;
+}
+
+/** 톤 곡선 (±range dB): 로우컷 + 대역 6개를 거친 응답과 대역마다 손잡이. 돌려주는 값으로 끌기를 계산한다. */
+export function drawToneEq(canvas, tone, { focus = null, range = 12, sr = 44100 } = {}) {
+  const pad = { l: 34, r: 10, t: 8, b: 18 };
+  const fr = toneFrame(canvas, pad);
+  const { g, w, h, xOf, fOfX } = fr;
+  const span = range + 3;
+  const yOf = (d) => pad.t + ((span - Math.max(-span, Math.min(span, d))) / (2 * span)) * (h - pad.t - pad.b);
+  toneZones(fr, pad, focus, false);
+  g.lineWidth = 1;
+  g.font = `10px ${color('font-data')}`;
+  for (const d of [-12, -6, 0, 6, 12]) {
+    const y = Math.round(yOf(d)) + 0.5;
+    g.strokeStyle = color(d === 0 ? 'line-strong' : 'grid');
+    g.beginPath();
+    g.moveTo(pad.l, y);
+    g.lineTo(w - pad.r, y);
+    g.stroke();
+    g.fillStyle = color('faint');
+    g.fillText(d > 0 ? `+${d}` : String(d), 2, y + 3);
+  }
+  const n = Math.max(80, Math.round((w - pad.l - pad.r) / 3));
+  const freqs = Array.from({ length: n }, (_, i) => fOfX(pad.l + (i / (n - 1)) * (w - pad.l - pad.r)));
+  const resp = toneResponse(tone, freqs, sr);
+  const y0 = yOf(0);
+  g.beginPath();
+  freqs.forEach((f, i) => {
+    const x = xOf(f);
+    const y = yOf(resp[i]);
+    if (i) g.lineTo(x, y); else g.moveTo(x, y);
+  });
+  g.strokeStyle = color('brass');
+  g.lineWidth = 2;
+  g.stroke();
+  g.lineTo(xOf(freqs.at(-1)), y0);
+  g.lineTo(xOf(freqs[0]), y0);
+  g.closePath();
+  g.fillStyle = color('brass-wash');
+  g.fill();
+  if (tone.lowcut > LOWCUT_OFF + 0.5) {
+    const x = Math.round(xOf(tone.lowcut)) + 0.5;
+    g.setLineDash([3, 3]);
+    g.strokeStyle = color('sky');
+    g.beginPath();
+    g.moveTo(x, pad.t);
+    g.lineTo(x, h - pad.b);
+    g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = color('sky');
+    g.fillText('로우컷', x + 4, pad.t + 10);
+  }
+  for (const b of TONE_BANDS) {
+    const x = xOf(Math.sqrt(b.lo * b.hi));
+    const y = yOf(tone[b.id]);
+    g.beginPath();
+    g.arc(x, y, b.id === focus ? 7 : 5, 0, Math.PI * 2);
+    g.fillStyle = color(b.id === focus ? 'brass-hi' : Math.abs(tone[b.id]) < 0.05 ? 'line-strong' : 'brass');
+    g.fill();
+    g.strokeStyle = color('ink');
+    g.lineWidth = 2;
+    g.stroke();
+  }
+  return {
+    bandAt: (x) => bandAtX(fr, x),
+    dbAt: (y) => span - ((y - pad.t) / (h - pad.t - pad.b)) * 2 * span,
+  };
 }

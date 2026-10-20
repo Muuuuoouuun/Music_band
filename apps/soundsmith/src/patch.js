@@ -1,6 +1,7 @@
 // 음색(패치) 형식: 무엇을 저장하고, 어떤 범위까지 움직일 수 있는지.
 // 화면의 모든 슬라이더·랜덤 만들기·변주·JSON 불러오기가 이 표 하나를 따른다.
 import { makeRng } from './rng.js';
+import { FLAT_TONE, LOWCUT_OFF, TONE_BANDS } from './tone.js';
 
 export const PATCH_VERSION = 1;
 
@@ -138,6 +139,9 @@ export const PARAMS = {
   'fx.feedback': num('딜레이 반복', 'pct', 0, 0.9),
   'fx.reverb': num('잔향', 'pct', 0, 1),
   'fx.size': log('잔향 길이', 's', 0.5, 8),
+  // 톤 맞추기: 효과까지 거친 소리 전체에 거는 대역 6개 + 로우컷 (믹서 채널 EQ 처럼)
+  ...Object.fromEntries(TONE_BANDS.map((b) => [`tone.${b.id}`, num(b.label, 'dB', -12, 12)])),
+  'tone.lowcut': log('로우컷', 'Hz', LOWCUT_OFF, 400),
   glide: num('글라이드', 's', 0, 1),
   mono: { kind: 'bool', label: '한 음씩 (모노)' },
   volume: num('볼륨', 'pct', 0, 1),
@@ -161,6 +165,7 @@ export const BASE_PATCH = {
   ampEnv: { a: 0.005, d: 0.3, s: 0.8, r: 0.3 },
   lfo: { target: 'pitch', rate: 5, depth: 0, delay: 0 },
   fx: { drive: 0, chorus: 0, delay: 0, delayBeats: 0.75, feedback: 0.35, reverb: 0.15, size: 2.2 },
+  tone: { ...FLAT_TONE },
   glide: 0,
   mono: false,
   volume: 0.8,
@@ -226,6 +231,7 @@ export function formatValue(path, v) {
   if (!spec) return String(v);
   if (spec.kind === 'bool') return v ? '켬' : '끔';
   if (spec.kind === 'enum') return spec.labels[spec.values.indexOf(v)] ?? String(v);
+  if (path === 'tone.lowcut' && v <= LOWCUT_OFF + 0.5) return '끔';
   switch (spec.unit) {
     case 'Hz': return v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 1 : 2)} kHz` : `${v >= 100 ? v.toFixed(0) : v.toFixed(v >= 10 ? 1 : 2)} Hz`;
     case 's': return v < 1 ? `${Math.round(v * 1000)} ms` : `${v.toFixed(2)} s`;
@@ -235,6 +241,7 @@ export function formatValue(path, v) {
     case 'st': return signed(v);
     case 'voices': return v === 1 ? '1개' : `${v}개`;
     case 'q': return v.toFixed(v >= 10 ? 0 : 1);
+    case 'dB': return Math.abs(v) < 0.05 ? '0 dB' : `${signed(v, 1)} dB`;
     default: return String(v);
   }
 }
@@ -375,7 +382,8 @@ export function mutatePatch(patch, amount = 0.3, seed = Date.now()) {
   const r = makeRng(seed);
   let p = structuredClone(patch);
   for (const [path, spec] of Object.entries(PARAMS)) {
-    if (['source', 'volume', 'filter.type', 'mono'].includes(path)) continue;
+    // 톤은 음색을 다 만든 뒤 방·밴드에 맞추는 값이라 변주에서 흔들지 않는다
+    if (['source', 'volume', 'filter.type', 'mono'].includes(path) || path.startsWith('tone.')) continue;
     const v = getPath(p, path);
     let next = v;
     if (spec.kind === 'enum') {

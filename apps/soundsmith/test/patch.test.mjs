@@ -154,3 +154,18 @@ test('기본 음색 id·쓰임새', async () => {
     assert.ok(f.uses.length && f.uses.every((u) => ok.has(u) && u !== 'all'), f.id);
   }
 });
+
+test('톤: 예전 음색은 평평한 톤으로 채우고, 범위를 넘으면 자르고, 변주에서는 흔들지 않는다', () => {
+  const old = normalizePatch({ name: '예전 음색' });
+  assert.deepEqual(old.tone, { deep: 0, bass: 0, mud: 0, body: 0, clarity: 0, air: 0, lowcut: 20 });
+  const p = normalizePatch({ tone: { bass: -30, air: 4.5, lowcut: 5000 } });
+  assert.equal(p.tone.bass, -12);
+  assert.equal(p.tone.air, 4.5);
+  assert.equal(p.tone.lowcut, 400);
+  assert.equal(formatValue('tone.air', 4.5), '+4.5 dB');
+  assert.equal(formatValue('tone.bass', 0), '0 dB');
+  assert.equal(formatValue('tone.lowcut', 20), '끔');
+  assert.equal(formatValue('tone.lowcut', 120), '120 Hz');
+  const m = mutatePatch({ ...p }, 1, 3);
+  assert.deepEqual(m.tone, p.tone);
+});
