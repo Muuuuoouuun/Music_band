@@ -315,3 +315,18 @@ export function demoSample(sr = 44100, seconds = 3, hz = 110) {
   }
   return out;
 }
+
+/** 거꾸로 (리버스 패드·스웰). */
+export function reversed(x) {
+  return Float32Array.from(x).reverse();
+}
+
+/** 앞뒤 페이드 (ms). 사인 곡선이라 끝이 부드럽다. */
+export function withFades(x, sr, inMs = 0, outMs = 0) {
+  const out = Float32Array.from(x);
+  const a = Math.min(out.length, Math.round((sr * inMs) / 1000));
+  const b = Math.min(out.length, Math.round((sr * outMs) / 1000));
+  for (let i = 0; i < a; i++) out[i] *= Math.sin(((i / a) * Math.PI) / 2);
+  for (let i = 0; i < b; i++) out[out.length - 1 - i] *= Math.sin(((i / b) * Math.PI) / 2);
+  return out;
+}

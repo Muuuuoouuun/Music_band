@@ -1,19 +1,22 @@
 // 소리 엔진: 브라우저 기본 Web Audio 노드만 쓴다 (워클릿·외부 라이브러리 없음).
 //
-//   음 하나(voice) ─ 오실레이터 ×겹치기 ─┐                    ┌ 트레몰로 ─ 볼륨 엔벨로프 ─┐
-//                  FM 변조기 ─→ 주파수   ├─ 섞기 ─ 필터 ──────┘                            │
-//                  노이즈 / 줄 / 샘플 ───┘    ↑ 필터 엔벨로프·LFO                           │
-//   악기(instrument) ← 음들 ─ 드라이브 ─ 코러스 ─┬─ 볼륨 ─→ 스튜디오 버스                 ←─┘
-//                                               ├─ 딜레이(박에 맞춤, 되먹임) ─┤
-//                                               └─ 잔향(합성 홀) ─────────────┘
+//   음 하나(voice) ─ 오실레이터 ×겹치기(아날로그 흔들림) ─┐                ┌ 트레몰로 ─ 볼륨 엔벨로프 ─┐
+//                  FM 변조기 ─→ 주파수                   ├─ 필터 12/24dB ─┘                            │
+//                  노이즈 / 줄 / 샘플 ───────────────────┘  ↑ 필터 엔벨로프·LFO·세기                     │
+//                  어택 소리(해머·숨) ───────────────────────────────────────────────────────────────────┤
+//                  옥타브 위 복사본 ─→ 쉬머(잔향으로만)                                                  │
+//   악기(instrument) ← 음들 ─ 드라이브 ─ 로파이 ─ 페이저 ─ 코러스 ─┬─ 그대로 ────────────┐            ←─┘
+//                                                                ├─ 딜레이(박에 맞춤) ──┤
+//                                                                └─ 프리딜레이 ─ 잔향 ─┴─ EQ 3밴드 ─ 맞춤 EQ ─ 컴프 ─ 스테레오 폭 ─ 볼륨
 //   스튜디오 버스 ─ 리미터 ─ 마스터 ─ 분석기(오실로스코프) ─ 스피커
 //
 // 루퍼 트랙마다 악기를 하나씩 따로 만들어 서로 다른 음색이 동시에 울린다.
-// 같은 Instrument 를 OfflineAudioContext 에 만들면 '지금 음색을 샘플로 굽기'가 된다.
-import { HARMONICS, envLevel } from './patch.js';
+// 같은 Instrument 를 OfflineAudioContext 에 만들면 '지금 음색을 샘플로 굽기'·'음원 따라 만들기'의 비교 렌더가 된다.
+import { HARMONICS, MATCH_BANDS, envLevel } from './patch.js';
 import { makeTuner } from './tuning.js';
+import { makeRng } from './rng.js';
 
-const MAX_VOICES = 12;
+const MAX_VOICES = 16;
 const clampHz = (f) => Math.min(20000, Math.max(20, f));
 
 // 홀 잔향: 시간이 갈수록 어두워지는 꼬리 + 좌우가 다른 초기 반사 (AirChoir audio.js 와 같은 방식)
@@ -143,6 +146,15 @@ function driveCurve(amount) {
   return curve;
 }
 
+/** 로파이: 계단 모양 곡선으로 소리 높낮이 단계를 줄인다 (256단계 → 8단계). */
+function lofiCurve(amount) {
+  const half = Math.max(4, Math.round(2 ** (8 - amount * 5))) / 2;
+  const n = 4096;
+  const curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) curve[i] = Math.round(((i / (n - 1)) * 2 - 1) * half) / half;
+  return curve;
+}
+
 function holdAt(param, when, fallback) {
   if (param.cancelAndHoldAtTime) param.cancelAndHoldAtTime(when);
   else {
@@ -152,20 +164,27 @@ function holdAt(param, when, fallback) {
 }
 
 const waveCache = new WeakMap();
-function setWave(ctx, osc, id) {
-  if (!HARMONICS[id]) {
+function setWave(ctx, osc, id, custom) {
+  if (id !== 'custom' && !HARMONICS[id]) {
     osc.type = id;
     return;
   }
   let forCtx = waveCache.get(ctx);
   if (!forCtx) waveCache.set(ctx, (forCtx = new Map()));
-  if (!forCtx.has(id)) {
-    const h = HARMONICS[id];
+  const key = id === 'custom' ? `custom:${custom.map((a) => a.toFixed(3)).join(',')}` : id;
+  if (!forCtx.has(key)) {
+    let h = id === 'custom' ? custom : HARMONICS[id];
+    if (!h.some((a) => a > 1e-4)) h = [1];
     const imag = new Float32Array(h.length + 1);
     h.forEach((a, k) => { imag[k + 1] = a; });
-    forCtx.set(id, ctx.createPeriodicWave(new Float32Array(h.length + 1), imag));
+    // 직접 그린 파형은 그릴 때마다 새로 생기니 오래된 것부터 버린다
+    if (id === 'custom' && forCtx.size > 80) {
+      const old = [...forCtx.keys()].find((k) => k.startsWith('custom:'));
+      if (old) forCtx.delete(old);
+    }
+    forCtx.set(key, ctx.createPeriodicWave(new Float32Array(h.length + 1), imag));
   }
-  osc.setPeriodicWave(forCtx.get(id));
+  osc.setPeriodicWave(forCtx.get(key));
 }
 
 export class Instrument {
@@ -178,56 +197,124 @@ export class Instrument {
     this.monoStack = [];
     this.sustain = false;
     this.pluckCache = new Map();
+    this.rng = makeRng(20261020);
     const ctx = (this.ctx = env.ctx);
     const gain = (v = 1) => {
       const g = ctx.createGain();
       g.gain.value = v;
       return g;
     };
+    const biquad = (type, frequency, q = 0.7) => {
+      const f = ctx.createBiquadFilter();
+      f.type = type;
+      f.frequency.value = frequency;
+      f.Q.value = q;
+      return f;
+    };
+    this.oscs = [];
+    const lfo = (rate) => {
+      const o = ctx.createOscillator();
+      o.frequency.value = rate;
+      o.start();
+      this.oscs.push(o);
+      return o;
+    };
     this.input = gain(1);
     this.shaper = ctx.createWaveShaper();
     this.shaper.oversample = '2x';
     this.postDrive = gain(1);
+    this.input.connect(this.shaper).connect(this.postDrive);
+    // 로파이: 계단 곡선 + 저역통과를 원래 소리와 바꿔 낀다
+    this.lofiDry = gain(1);
+    this.lofiWet = gain(0);
+    this.lofiShaper = ctx.createWaveShaper();
+    this.lofiLP = biquad('lowpass', 16000);
+    this.texIn = gain(1);
+    this.postDrive.connect(this.lofiDry).connect(this.texIn);
+    this.postDrive.connect(this.lofiShaper).connect(this.lofiLP).connect(this.lofiWet).connect(this.texIn);
+    // 페이저: 올패스 4단을 느린 LFO 로 쓸어 원래 소리와 섞으면 움직이는 골이 생긴다
+    this.phaserDry = gain(1);
+    this.phaserWet = gain(0);
+    this.phaserLfo = lfo(0.4);
+    this.phaserDepth = gain(1500);
+    this.phaserLfo.connect(this.phaserDepth);
+    let stage = this.texIn;
+    for (const f of [320, 760, 1700, 3600]) {
+      const ap = biquad('allpass', f, 0.6);
+      this.phaserDepth.connect(ap.detune);
+      stage = stage.connect(ap);
+    }
+    stage.connect(this.phaserWet);
+    this.texIn.connect(this.phaserDry);
+    this.chorusIn = gain(1);
+    this.phaserDry.connect(this.chorusIn);
+    this.phaserWet.connect(this.chorusIn);
     this.chorusDry = gain(1);
     this.chorusWet = gain(0);
     this.fxBus = gain(1);
-    this.volume = gain(0.8);
-    this.input.connect(this.shaper).connect(this.postDrive);
-    this.postDrive.connect(this.chorusDry).connect(this.fxBus);
-    this.chorusLfos = [];
+    this.chorusIn.connect(this.chorusDry).connect(this.fxBus);
     for (const [base, rate, depth, pan] of [[0.012, 0.31, 0.0025, -0.7], [0.019, 0.43, 0.003, 0.7]]) {
       const d = ctx.createDelay(0.06);
       d.delayTime.value = base;
       const p = ctx.createStereoPanner();
       p.pan.value = pan;
-      const lfo = ctx.createOscillator();
-      lfo.frequency.value = rate;
-      const lg = gain(depth);
-      lfo.connect(lg).connect(d.delayTime);
-      lfo.start();
-      this.chorusLfos.push(lfo);
-      this.postDrive.connect(d).connect(p).connect(this.chorusWet);
+      lfo(rate).connect(gain(depth)).connect(d.delayTime);
+      this.chorusIn.connect(d).connect(p).connect(this.chorusWet);
     }
     this.chorusWet.connect(this.fxBus);
-    this.fxBus.connect(this.volume);
+    // 그대로·딜레이·잔향이 모이는 곳
+    this.post = gain(1);
+    this.fxBus.connect(this.post);
     // 딜레이: 되먹임 고리 안에 저역통과 (반복될수록 어두워짐)
     this.delaySend = gain(0);
     this.echo = ctx.createDelay(4);
-    this.echoTone = ctx.createBiquadFilter();
-    this.echoTone.type = 'lowpass';
-    this.echoTone.frequency.value = 4200;
+    this.echoTone = biquad('lowpass', 4200);
     this.feedback = gain(0.35);
     this.fxBus.connect(this.delaySend).connect(this.echo).connect(this.echoTone).connect(this.feedback).connect(this.echo);
-    this.echoTone.connect(this.volume);
+    this.echoTone.connect(this.post);
+    // 잔향: 프리딜레이 → 홀 → 저역 정리(150Hz 아래 깎기) → 밝기
     this.reverbSend = gain(0);
+    this.shimmerIn = gain(1);
+    this.predelay = ctx.createDelay(0.3);
     this.reverb = ctx.createConvolver();
-    this.fxBus.connect(this.reverbSend).connect(this.reverb).connect(this.volume);
-    this.volume.connect(env.out);
+    this.revHP = biquad('highpass', 150);
+    this.revTone = biquad('lowpass', 8000);
+    this.fxBus.connect(this.reverbSend).connect(this.predelay);
+    this.shimmerIn.connect(this.predelay);
+    this.predelay.connect(this.reverb).connect(this.revHP).connect(this.revTone).connect(this.post);
+    // 마무리: EQ 3밴드 → 맞춤 EQ(옥타브 10띠) → 컴프 → 스테레오 폭 → 볼륨
+    this.eqLow = biquad('lowshelf', 180);
+    this.eqMid = biquad('peaking', 1000, 0.9);
+    this.eqHigh = biquad('highshelf', 5500);
+    this.post.connect(this.eqLow).connect(this.eqMid).connect(this.eqHigh);
+    this.match = MATCH_BANDS.map((f) => biquad('peaking', Math.min(f, ctx.sampleRate * 0.45), 1.41));
+    let tail = this.eqHigh;
+    for (const m of this.match) tail = tail.connect(m);
+    this.comp = ctx.createDynamicsCompressor();
+    this.comp.knee.value = 10;
+    this.comp.attack.value = 0.008;
+    this.comp.release.value = 0.22;
+    this.compDry = gain(1);
+    this.compWet = gain(0);
+    this.widthIn = gain(1);
+    tail.connect(this.compDry).connect(this.widthIn);
+    tail.connect(this.comp).connect(this.compWet).connect(this.widthIn);
+    // 스테레오 폭: 가운데(L+R)는 그대로, 양옆 차이(L−R)만 키우거나 줄인다. 모노 입력도 두 채널로 펼쳐 받는다
+    Object.assign(this.widthIn, { channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers' });
+    const split = ctx.createChannelSplitter(2);
+    const merge = ctx.createChannelMerger(2);
+    this.widthGains = { ll: gain(1), rl: gain(0), rr: gain(1), lr: gain(0) };
+    this.widthIn.connect(split);
+    split.connect(this.widthGains.ll, 0).connect(merge, 0, 0);
+    split.connect(this.widthGains.rl, 1).connect(merge, 0, 0);
+    split.connect(this.widthGains.rr, 1).connect(merge, 0, 1);
+    split.connect(this.widthGains.lr, 0).connect(merge, 0, 1);
+    this.volume = gain(0.8);
+    merge.connect(this.volume).connect(env.out);
     // LFO 하나를 세 곳(음정·필터·볼륨)으로 나눠 보낸다. 흔드는 곳을 바꾸면 깊이만 옮겨진다.
-    this.lfo = ctx.createOscillator();
+    this.lfo = lfo(5);
     this.lfoTo = { pitch: gain(0), filter: gain(0), amp: gain(0) };
     for (const g of Object.values(this.lfoTo)) this.lfo.connect(g);
-    this.lfo.start();
     this.noise = (() => {
       const b = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
       const d = b.getChannelData(0);
@@ -253,19 +340,46 @@ export class Instrument {
     this.patch = patch;
     const now = this.ctx.currentTime;
     const p = patch;
+    const fx = p.fx;
     const smooth = (param, v) => param.setTargetAtTime(v, now, 0.02);
-    if (!prev || prev.fx.drive !== p.fx.drive) this.shaper.curve = p.fx.drive > 0.001 ? driveCurve(p.fx.drive) : null;
-    smooth(this.postDrive.gain, 1 / (1 + p.fx.drive * 1.5));
-    smooth(this.chorusWet.gain, p.fx.chorus * 0.8);
-    smooth(this.chorusDry.gain, 1 - p.fx.chorus * 0.3);
-    smooth(this.delaySend.gain, p.fx.delay * 0.6);
-    smooth(this.feedback.gain, p.fx.feedback);
+    if (!prev || prev.fx.drive !== fx.drive) this.shaper.curve = fx.drive > 0.001 ? driveCurve(fx.drive) : null;
+    smooth(this.postDrive.gain, 1 / (1 + fx.drive * 1.5));
+    if (!prev || prev.fx.lofi !== fx.lofi) this.lofiShaper.curve = fx.lofi > 0.001 ? lofiCurve(fx.lofi) : null;
+    const lofiMix = Math.min(1, fx.lofi * 4);
+    smooth(this.lofiWet.gain, lofiMix);
+    smooth(this.lofiDry.gain, 1 - lofiMix);
+    smooth(this.lofiLP.frequency, 16000 * 2 ** (-fx.lofi * 2.5));
+    smooth(this.phaserWet.gain, fx.phaser * 0.5);
+    smooth(this.phaserDry.gain, 1 - fx.phaser * 0.5);
+    smooth(this.phaserLfo.frequency, fx.phaserRate);
+    smooth(this.chorusWet.gain, fx.chorus * 0.8);
+    smooth(this.chorusDry.gain, 1 - fx.chorus * 0.3);
+    smooth(this.delaySend.gain, fx.delay * 0.6);
+    smooth(this.feedback.gain, fx.feedback);
     this.syncTempo();
-    smooth(this.reverbSend.gain, p.fx.reverb * 0.9);
-    if (this.irSize == null || Math.abs(this.irSize - p.fx.size) > 0.12) {
-      this.irSize = p.fx.size;
-      this.reverb.buffer = this.env.irFor(p.fx.size);
+    smooth(this.reverbSend.gain, fx.reverb * 0.9);
+    smooth(this.predelay.delayTime, fx.predelay);
+    smooth(this.revTone.frequency, Math.min(this.ctx.sampleRate * 0.45, 1500 * 2 ** (fx.tone * 3.4)));
+    if (this.irSize == null || Math.abs(this.irSize - fx.size) > 0.12) {
+      this.irSize = fx.size;
+      this.reverb.buffer = this.env.irFor(fx.size);
     }
+    smooth(this.eqLow.gain, p.eq.low);
+    smooth(this.eqMid.gain, p.eq.mid);
+    smooth(this.eqMid.frequency, p.eq.midFreq);
+    smooth(this.eqHigh.gain, p.eq.high);
+    this.match.forEach((m, i) => smooth(m.gain, p.eq.match[i]));
+    // 컴프: 0 이면 완전히 빼서(지연·색깔 없음) 지나가게 한다
+    // (브라우저 컴프는 줄인 만큼 스스로 키워 주므로, 켜는 순간 커지지 않게 조금 낮춰 받는다)
+    smooth(this.comp.threshold, -6 - 24 * fx.comp);
+    smooth(this.comp.ratio, 1 + 5 * fx.comp);
+    smooth(this.compWet.gain, fx.comp > 0.001 ? 1 / (1 + 0.9 * fx.comp) : 0);
+    smooth(this.compDry.gain, fx.comp > 0.001 ? 0 : 1);
+    const w = fx.width;
+    smooth(this.widthGains.ll.gain, (1 + w) / 2);
+    smooth(this.widthGains.rr.gain, (1 + w) / 2);
+    smooth(this.widthGains.rl.gain, (1 - w) / 2);
+    smooth(this.widthGains.lr.gain, (1 - w) / 2);
     smooth(this.volume.gain, p.volume);
     smooth(this.lfo.frequency, p.lfo.rate);
     const depth = { pitch: p.lfo.depth * 50, filter: p.lfo.depth * 2400, amp: p.lfo.depth * 0.5 };
@@ -341,8 +455,7 @@ export class Instrument {
     const ctx = this.ctx;
     setTimeout(() => {
       try {
-        this.lfo.stop();
-        this.chorusLfos.forEach((l) => l.stop());
+        this.oscs.forEach((o) => o.stop());
         this.volume.disconnect();
       } catch { /* 이미 닫힌 컨텍스트 */ }
     }, ctx instanceof AudioContext ? 400 : 0);
@@ -367,8 +480,9 @@ export class Instrument {
     const ctx = this.ctx;
     const p = this.patch;
     const tuner = this.env.tuner;
+    const rnd = this.rng;
     const freq = tuner.freq(midi);
-    const v = { midi, start: when, released: false, sources: [], nodes: [], patch: p, velocity };
+    const v = { midi, start: when, released: false, sources: [], nodes: [], patch: p, velocity, delays: new Map(), stops: new Map() };
     const node = (n) => {
       v.nodes.push(n);
       return n;
@@ -379,12 +493,19 @@ export class Instrument {
       return g;
     };
     const mix = gain(1);
-    const filter = node(ctx.createBiquadFilter());
-    filter.type = p.filter.type;
-    filter.Q.value = p.filter.q;
+    // 24dB 는 같은 필터를 두 번 거친다. 레조넌스는 첫 단만 (둘 다 올리면 귀가 아플 만큼 솟음)
+    const filters = [];
+    for (let k = 0; k < (p.filter.slope === 24 ? 2 : 1); k++) {
+      const f = node(ctx.createBiquadFilter());
+      f.type = p.filter.type;
+      f.Q.value = k === 0 ? p.filter.q : 0.6;
+      filters.push(f);
+    }
     const trem = gain(1 - p.lfo.depth * 0.5 * (p.lfo.target === 'amp'));
     const amp = gain(0);
-    mix.connect(filter).connect(trem).connect(amp).connect(this.input);
+    let chain = mix;
+    for (const f of filters) chain = chain.connect(f);
+    chain.connect(trem).connect(amp).connect(this.input);
     // LFO 는 음마다 '늦게 시작'만큼 서서히 들어온다
     v.lfoLinks = [];
     const lfoFade = (target) => {
@@ -395,15 +516,25 @@ export class Instrument {
       v.lfoLinks.push([this.lfoTo[target], g]);
       return g;
     };
-    lfoFade('filter').connect(filter.detune);
+    const filterLfo = lfoFade('filter');
+    for (const f of filters) filterLfo.connect(f.detune);
     lfoFade('amp').connect(trem.gain);
     const pitchLfo = lfoFade('pitch');
     const pitchTargets = [];
+    // 쉬머: 옥타브 위 복사본을 잔향으로만 보낸다 (BigSky 같은 워십 쉬머)
+    let shim = null;
+    if (p.fx.shimmer > 0.001) {
+      shim = v.shim = gain(0);
+      v.shimLevel = p.fx.shimmer * 0.18 * (1 - p.vel.amp + p.vel.amp * velocity);
+      shim.gain.setValueAtTime(0, when);
+      shim.gain.setTargetAtTime(v.shimLevel, when, Math.max(0.25, p.ampEnv.a * 0.8));
+      shim.connect(this.shimmerIn);
+    }
 
     if (p.source === 'synth') {
       v.oscs = [];
       v.oscGains = [];
-      let carrierFreqs = [];
+      const carrierFreqs = [];
       p.osc.forEach((o, i) => {
         if (i > 0 && o.level <= 0.001) {
           v.oscGains.push(null);
@@ -415,19 +546,23 @@ export class Instrument {
         const ratio = 2 ** (o.octave + o.semi / 12);
         for (let u = 0; u < o.unison; u++) {
           const osc = node(ctx.createOscillator());
-          setWave(ctx, osc, o.wave);
+          setWave(ctx, osc, o.wave, p.custom);
           osc.frequency.value = freq * ratio;
           const spread = o.unison > 1 ? (u / (o.unison - 1) - 0.5) * 2 : 0;
-          osc.detune.value = o.detune + spread * o.spread;
+          // 아날로그 흔들림: 오실레이터마다 몇 cent 씩 다른 자리
+          const drift = p.drift > 0.001 ? (rnd.next() - 0.5) * 2 * p.drift * 7 : 0;
+          osc.detune.value = o.detune + spread * o.spread + drift;
           let out = osc;
           if (o.unison > 1) {
             const pan = node(ctx.createStereoPanner());
             pan.pan.value = spread * 0.6;
             out = osc.connect(pan);
+            // 겹친 소리의 시작 위상을 흩어 '레이저' 같은 첫소리를 없앤다
+            v.delays.set(osc, rnd.next() / (freq * ratio));
           }
           out.connect(g);
           v.sources.push(osc);
-          v.oscs.push({ osc, ratio, index: i, spread });
+          v.oscs.push({ osc, ratio, index: i, spread, drift });
           pitchTargets.push(osc.detune);
           if (i === 0) carrierFreqs.push(osc.frequency);
         }
@@ -455,11 +590,23 @@ export class Instrument {
         v.sources.push(src);
         v.noiseGain = g;
       }
+      v.shimOscs = [];
+      if (shim) {
+        const ratio0 = 2 ** (p.osc[0].octave + p.osc[0].semi / 12);
+        for (const [mult, level, wave] of [[2, 1, p.osc[0].wave], [4, 0.35, 'sine']]) {
+          const osc = node(ctx.createOscillator());
+          setWave(ctx, osc, wave, p.custom);
+          osc.frequency.value = freq * ratio0 * mult;
+          osc.connect(gain(level)).connect(shim);
+          v.sources.push(osc);
+          v.shimOscs.push({ osc, ratio: ratio0 * mult });
+        }
+      }
       v.retune = (m, t) => {
         const f = tuner.freq(m);
         const tau = Math.max(0.003, v.patch.glide / 3);
         v.midi = m;
-        for (const o of v.oscs) o.osc.frequency.setTargetAtTime(f * o.ratio, t, tau);
+        for (const o of [...v.oscs, ...v.shimOscs]) o.osc.frequency.setTargetAtTime(f * o.ratio, t, tau);
         if (v.mod) v.mod.osc.frequency.setTargetAtTime(f * v.mod.ratio, t, tau);
         v.filterBase = clampHz(v.patch.filter.cutoff * 2 ** ((v.patch.filter.keytrack * (m - 60)) / 12));
       };
@@ -471,8 +618,9 @@ export class Instrument {
         }
       }
     } else if (p.source === 'pluck') {
+      const buffer = this._pluckBuffer(freq, velocity);
       const src = node(ctx.createBufferSource());
-      src.buffer = this._pluckBuffer(freq, velocity);
+      src.buffer = buffer;
       const body1 = node(ctx.createBiquadFilter());
       body1.type = 'peaking';
       body1.frequency.value = 105;
@@ -490,54 +638,96 @@ export class Instrument {
       src.connect(body1).connect(body2).connect(air).connect(mix);
       v.sources.push(src);
       pitchTargets.push(src.detune);
+      if (shim) {
+        const up = node(ctx.createBufferSource());
+        up.buffer = buffer;
+        up.detune.value = 1200;
+        up.connect(shim);
+        v.sources.push(up);
+      }
     } else {
       const s = this.sample;
-      const src = node(ctx.createBufferSource());
-      src.buffer = s.buffer;
-      src.playbackRate.value = freq / s.rootHz;
-      if (s.loop) {
-        src.loop = true;
-        src.loopStart = s.loop.start;
-        src.loopEnd = s.loop.end;
-      }
+      const make = (rate) => {
+        const src = node(ctx.createBufferSource());
+        src.buffer = s.buffer;
+        src.playbackRate.value = rate;
+        if (s.loop) {
+          src.loop = true;
+          src.loopStart = s.loop.start;
+          src.loopEnd = s.loop.end;
+        } else v.stops.set(src, when + (s.end - s.start) / rate);
+        v.sources.push(src);
+        return src;
+      };
+      const rate = freq / s.rootHz;
+      const src = make(rate);
       src.connect(mix);
-      v.sources.push(src);
       v.sampleOffset = s.start;
-      if (!s.loop) src.stop(when + (s.end - s.start) / src.playbackRate.value);
       pitchTargets.push(src.detune);
+      if (shim) make(rate * 2).connect(shim);
+    }
+    // 아날로그 흔들림: 음마다 다른 빠르기로 천천히 출렁이는 음정
+    if (p.drift > 0.001 && pitchTargets.length) {
+      const wob = node(ctx.createOscillator());
+      wob.frequency.value = rnd.range(0.15, 0.6);
+      const wg = gain(p.drift * 6);
+      wob.connect(wg);
+      for (const param of pitchTargets) wg.connect(param);
+      v.sources.push(wob);
     }
     for (const param of pitchTargets) pitchLfo.connect(param);
 
-    // 필터 엔벨로프 (세게 칠수록 조금 밝게)
+    // 어택 소리: 해머·피크·숨이 닿는 순간의 짧은 잡음 (엔벨로프와 따로 바로 악기로)
+    if (p.click > 0.001) {
+      const src = node(ctx.createBufferSource());
+      src.buffer = this.noise;
+      const bp = node(ctx.createBiquadFilter());
+      bp.type = 'bandpass';
+      bp.frequency.value = clampHz(Math.max(700 * 2 ** (p.clickTone * 3.6), freq * 2));
+      bp.Q.value = 0.9;
+      const g = gain(0);
+      const level = p.click * 0.6 * (0.3 + 0.7 * velocity);
+      g.gain.setValueAtTime(level, when);
+      g.gain.setTargetAtTime(0, when + 0.002, 0.004 + (1 - p.clickTone) * 0.014);
+      src.connect(bp).connect(g).connect(this.input);
+      src.start(when, rnd.range(0, 1.5));
+      src.stop(when + 0.15);
+    }
+
+    // 필터 엔벨로프 (세게 칠수록 밝게)
     const fe = p.filterEnv;
-    v.filterBase = clampHz(p.filter.cutoff * 2 ** ((p.filter.keytrack * (midi - 60)) / 12) * 2 ** ((velocity - 0.7) * 0.8));
+    v.filterBase = clampHz(p.filter.cutoff * 2 ** ((p.filter.keytrack * (midi - 60)) / 12) * 2 ** ((velocity - 0.7) * p.vel.filter));
     const peakF = clampHz(v.filterBase * 2 ** p.filter.env);
-    filter.frequency.setValueAtTime(v.filterBase, when);
-    if (Math.abs(p.filter.env) > 0.01) {
-      filter.frequency.exponentialRampToValueAtTime(peakF, when + Math.max(0.002, fe.a));
-      filter.frequency.setTargetAtTime(clampHz(v.filterBase * 2 ** (p.filter.env * fe.s)), when + Math.max(0.002, fe.a), Math.max(0.005, fe.d / 4));
+    for (const f of filters) {
+      f.frequency.setValueAtTime(v.filterBase, when);
+      if (Math.abs(p.filter.env) > 0.01) {
+        f.frequency.exponentialRampToValueAtTime(peakF, when + Math.max(0.002, fe.a));
+        f.frequency.setTargetAtTime(clampHz(v.filterBase * 2 ** (p.filter.env * fe.s)), when + Math.max(0.002, fe.a), Math.max(0.005, fe.d / 4));
+      }
     }
     // 볼륨 엔벨로프
     const ae = p.ampEnv;
-    v.peakAmp = 0.32 * (0.35 + 0.65 * velocity);
+    v.peakAmp = 0.32 * (1 - p.vel.amp + p.vel.amp * velocity);
     amp.gain.setValueAtTime(0, when);
     amp.gain.linearRampToValueAtTime(v.peakAmp, when + Math.max(0.001, ae.a));
     amp.gain.setTargetAtTime(v.peakAmp * ae.s, when + Math.max(0.001, ae.a), Math.max(0.005, ae.d / 4));
     v.amp = amp;
-    v.filter = filter;
+    v.filters = filters;
     v.live = (np, now) => {
-      filter.Q.setTargetAtTime(np.filter.q, now, 0.02);
-      if (filter.type !== np.filter.type) filter.type = np.filter.type;
+      filters[0].Q.setTargetAtTime(np.filter.q, now, 0.02);
+      for (const f of filters) if (f.type !== np.filter.type) f.type = np.filter.type;
       if (v.oscGains) np.osc.forEach((o, i) => v.oscGains[i]?.gain.setTargetAtTime(o.level / Math.sqrt(o.unison), now, 0.02));
-      if (v.oscs) for (const o of v.oscs) o.osc.detune.setTargetAtTime(np.osc[o.index].detune + o.spread * np.osc[o.index].spread, now, 0.02);
+      if (v.oscs) for (const o of v.oscs) o.osc.detune.setTargetAtTime(np.osc[o.index].detune + o.spread * np.osc[o.index].spread + o.drift, now, 0.02);
       v.noiseGain?.gain.setTargetAtTime(np.noise * 0.35, now, 0.02);
       const base = clampHz(np.filter.cutoff * 2 ** ((np.filter.keytrack * (v.midi - 60)) / 12));
       if (Math.abs(base - v.filterBase) / v.filterBase > 0.01 && now > v.start + np.filterEnv.a) {
         v.filterBase = base;
-        filter.frequency.setTargetAtTime(clampHz(base * 2 ** (np.filter.env * np.filterEnv.s)), now, 0.03);
+        for (const f of filters) f.frequency.setTargetAtTime(clampHz(base * 2 ** (np.filter.env * np.filterEnv.s)), now, 0.03);
       }
     };
-    for (const src of v.sources) src.start(when, p.source === 'sample' ? v.sampleOffset : 0);
+    for (const src of v.sources) src.start(when + (v.delays.get(src) ?? 0), p.source === 'sample' ? v.sampleOffset : 0);
+    // 한 번만 울리는 샘플은 끝에서 멈춘다 (멈춤 예약은 시작 뒤에만 된다)
+    for (const [src, at] of v.stops) src.stop(at);
     const life = v.sources[0];
     life.onended = () => {
       for (const [from, to] of v.lfoLinks) from.disconnect(to);
@@ -559,8 +749,14 @@ export class Instrument {
     holdAt(v.amp.gain, t, envLevel(p.ampEnv, held) * v.peakAmp);
     v.amp.gain.setTargetAtTime(0, t, Math.max(0.004, r / 5));
     if (Math.abs(p.filter.env) > 0.01) {
-      holdAt(v.filter.frequency, t, clampHz(v.filterBase * 2 ** (p.filter.env * envLevel(p.filterEnv, held))));
-      v.filter.frequency.setTargetAtTime(v.filterBase, t, Math.max(0.005, (fastRelease ?? p.filterEnv.r) / 5));
+      for (const f of v.filters) {
+        holdAt(f.frequency, t, clampHz(v.filterBase * 2 ** (p.filter.env * envLevel(p.filterEnv, held))));
+        f.frequency.setTargetAtTime(v.filterBase, t, Math.max(0.005, (fastRelease ?? p.filterEnv.r) / 5));
+      }
+    }
+    if (v.shim) {
+      holdAt(v.shim.gain, t, v.shimLevel);
+      v.shim.gain.setTargetAtTime(0, t, Math.max(0.004, r / 4));
     }
     const stopAt = t + r * 1.25 + 0.05;
     for (const s of v.sources) {
@@ -645,8 +841,11 @@ export class Studio {
   }
 }
 
-/** 지금 음색으로 한 음을 미리 연주해 AudioBuffer 로 (샘플러의 '음색 굽기', 테스트). */
-export async function renderNote(patch, { midi = 57, seconds = 3, hold = 2.2, tuning = {}, sample = null, sampleRate = 44100, dry = true } = {}) {
+/**
+ * 지금 음색으로 음(들)을 미리 연주해 AudioBuffer 로 (샘플러의 '음색 굽기', 음원 따라 만들기의 비교, 테스트).
+ * notes 를 주면 화음으로 친다. dry 면 딜레이·잔향·쉬머를 뺀다.
+ */
+export async function renderNote(patch, { midi = 57, notes = null, velocity = 0.8, seconds = 3, hold = 2.2, tuning = {}, sample = null, sampleRate = 44100, dry = true } = {}) {
   const ctx = new OfflineAudioContext(2, Math.round(sampleRate * seconds), sampleRate);
   const irs = new Map();
   const env = {
@@ -659,9 +858,10 @@ export async function renderNote(patch, { midi = 57, seconds = 3, hold = 2.2, tu
       return irs.get(s);
     },
   };
-  const p = dry ? { ...patch, fx: { ...patch.fx, delay: 0, reverb: 0 } } : patch;
+  const p = dry ? { ...patch, fx: { ...patch.fx, delay: 0, reverb: 0, shimmer: 0 } } : patch;
   const inst = new Instrument(env, p, sample);
-  inst.noteOn(midi, 0.8, 0.01);
-  inst.noteOff(midi, hold);
+  const list = notes ?? [midi];
+  for (const m of list) inst.noteOn(m, velocity, 0.01);
+  for (const m of list) inst.noteOff(m, hold);
   return ctx.startRendering();
 }

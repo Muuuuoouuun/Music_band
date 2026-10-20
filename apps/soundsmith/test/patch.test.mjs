@@ -3,13 +3,15 @@ import assert from 'node:assert/strict';
 import {
   PARAMS, BASE_PATCH, normalizePatch, getPath, setPath, toUnit, fromUnit, formatValue,
   applyMacro, MACROS, randomPatch, RANDOM_KINDS, mutatePatch, envLevel, releaseLevel, waveCycle, WAVES,
+  blendPatches, harmonicsOf, CUSTOM_LEN, MATCH_BANDS,
 } from '../src/patch.js';
 import { FACTORY } from '../src/presets.js';
 
 const inRange = (p) => {
   for (const [path, spec] of Object.entries(PARAMS)) {
     const v = getPath(p, path);
-    if (spec.kind === 'enum') assert.ok(spec.values.includes(v), `${path}=${v}`);
+    if (spec.kind === 'list') assert.ok(v.length === spec.len && v.every((x) => x >= spec.min && x <= spec.max), path);
+    else if (spec.kind === 'enum') assert.ok(spec.values.includes(v), `${path}=${v}`);
     else if (spec.kind === 'bool') assert.equal(typeof v, 'boolean', path);
     else assert.ok(v >= spec.min && v <= spec.max, `${path}=${v}`);
   }
@@ -112,4 +114,41 @@ test('파형 그림은 -1..1 로 맞춰진다', () => {
     const c = waveCycle(w.id, 128);
     assert.ok(Math.abs(Math.max(...c.map(Math.abs)) - 1) < 1e-6, w.id);
   }
+});
+
+test('1판 음색(새 값 없음)도 그대로 불러지고 새 값은 담백한 기본값', () => {
+  const v1 = { v: 1, name: '옛 패드', category: 'pad', osc: [{ wave: 'warm', unison: 3, spread: 10, level: 0.6 }], fx: { reverb: 0.5, size: 4 } };
+  const p = normalizePatch(v1);
+  assert.equal(p.v, 2);
+  assert.equal(p.osc[0].wave, 'warm');
+  assert.equal(p.fx.reverb, 0.5);
+  assert.equal(p.fx.width, 1);
+  assert.equal(p.fx.shimmer, 0);
+  assert.equal(p.filter.slope, 12);
+  assert.deepEqual(p.eq.match, MATCH_BANDS.map(() => 0));
+  assert.equal(p.custom.length, CUSTOM_LEN);
+  inRange(p);
+});
+
+test('목록 값(직접 그린 배음·맞춤 EQ)은 길이·범위를 지킨다', () => {
+  const p = normalizePatch({ custom: [2, -1, 'x'], eq: { match: Array(10).fill(40) } });
+  assert.equal(p.custom.length, CUSTOM_LEN);
+  assert.deepEqual(p.eq.match, Array(10).fill(15));
+  const q = normalizePatch({ custom: Array.from({ length: CUSTOM_LEN }, (_, i) => (i === 3 ? 7 : i === 4 ? NaN : 0.5)) });
+  assert.equal(q.custom[3], 1);
+  assert.equal(q.custom[4], BASE_PATCH.custom[4]);
+  assert.deepEqual(harmonicsOf('square', undefined, 6), [1, 0, 1 / 3, 0, 1 / 5, 0]);
+  assert.equal(harmonicsOf('custom', q.custom, 3)[1], 0.5);
+});
+
+test('섞기(모프): 양 끝은 원래 음색, 가운데는 사이 값', () => {
+  const a = FACTORY.find((f) => f.patch.name === '워십 패드').patch;
+  const b = FACTORY.find((f) => f.patch.name === '신스 베이스').patch;
+  assert.deepEqual(blendPatches(a, b, 0), a);
+  assert.deepEqual(blendPatches(a, b, 1), b);
+  const m = blendPatches(a, b, 0.5);
+  inRange(m);
+  assert.ok(Math.abs(m.filter.cutoff - Math.sqrt(a.filter.cutoff * b.filter.cutoff)) < 1);
+  assert.ok(Math.abs(m.fx.reverb - (a.fx.reverb + b.fx.reverb) / 2) < 1e-9);
+  assert.equal(m.name, '워십 패드 × 신스 베이스');
 });

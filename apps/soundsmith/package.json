@@ -3,9 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test test/*.test.mjs && python3 -m unittest discover -s test -p 'test_*.py'",
     "check": "node test/engine.check.mjs && node test/app.check.mjs",
-    "start": "python3 -m http.server 8010 --bind 127.0.0.1"
+    "start": "python3 server.py",
+    "static": "python3 -m http.server 8010 --bind 127.0.0.1"
   },
-  "devDependencies": { "playwright": "1.58.2" }
+  "devDependencies": {
+    "playwright": "1.58.2"
+  }
 }
