@@ -152,20 +152,22 @@ function holdAt(param, when, fallback) {
 }
 
 const waveCache = new WeakMap();
-function setWave(ctx, osc, id) {
-  if (!HARMONICS[id]) {
+function setWave(ctx, osc, id, custom) {
+  if (!HARMONICS[id] && id !== 'custom') {
     osc.type = id;
     return;
   }
   let forCtx = waveCache.get(ctx);
   if (!forCtx) waveCache.set(ctx, (forCtx = new Map()));
-  if (!forCtx.has(id)) {
-    const h = HARMONICS[id];
+  const key = id === 'custom' ? `custom:${custom.join(',')}` : id;
+  if (!forCtx.has(key)) {
+    const h = id === 'custom' ? custom : HARMONICS[id];
     const imag = new Float32Array(h.length + 1);
     h.forEach((a, k) => { imag[k + 1] = a; });
-    forCtx.set(id, ctx.createPeriodicWave(new Float32Array(h.length + 1), imag));
+    if (forCtx.size > 64) forCtx.delete(forCtx.keys().next().value);
+    forCtx.set(key, ctx.createPeriodicWave(new Float32Array(h.length + 1), imag));
   }
-  osc.setPeriodicWave(forCtx.get(id));
+  osc.setPeriodicWave(forCtx.get(key));
 }
 
 export class Instrument {
@@ -415,7 +417,7 @@ export class Instrument {
         const ratio = 2 ** (o.octave + o.semi / 12);
         for (let u = 0; u < o.unison; u++) {
           const osc = node(ctx.createOscillator());
-          setWave(ctx, osc, o.wave);
+          setWave(ctx, osc, o.wave, p.custom);
           osc.frequency.value = freq * ratio;
           const spread = o.unison > 1 ? (u / (o.unison - 1) - 0.5) * 2 : 0;
           osc.detune.value = o.detune + spread * o.spread;

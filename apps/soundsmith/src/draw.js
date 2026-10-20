@@ -341,3 +341,130 @@ export function drawNeedle(canvas, cents) {
   g.lineTo(cx + (r - 4) * Math.cos(a), cy + (r - 4) * Math.sin(a));
   g.stroke();
 }
+
+// ---------------------------------------------------------------------------
+// 실험실에서 끌어서 고치는 그림들. 그린 위치를 돌려줘서 화면이 손잡이를 찾을 수 있게 한다.
+// ---------------------------------------------------------------------------
+
+export const DB_FLOOR = -48;
+
+/** 배음 막대 (dB 눈금). 돌려주는 값으로 포인터 위치 -> (막대 번호, 세기)를 계산한다. */
+export function drawHarmonics(canvas, harmonics, { ghost = false, focus = -1 } = {}) {
+  const { g, w, h } = fit(canvas);
+  const pad = { l: 34, r: 8, t: 10, b: 20 };
+  const n = harmonics.length;
+  const col = (w - pad.l - pad.r) / n;
+  const yOfDb = (db) => pad.t + (Math.min(0, db) / DB_FLOOR) * (h - pad.t - pad.b);
+  g.font = `11px ${color('font-data')}`;
+  for (const db of [0, -12, -24, -36, -48]) {
+    const y = Math.round(yOfDb(db)) + 0.5;
+    g.strokeStyle = color('grid');
+    g.beginPath();
+    g.moveTo(pad.l, y);
+    g.lineTo(w - pad.r, y);
+    g.stroke();
+    g.fillStyle = color('muted');
+    g.fillText(`${db}`, 2, y + 4);
+  }
+  harmonics.forEach((a, i) => {
+    const db = a > 0 ? Math.max(DB_FLOOR, 20 * Math.log10(a)) : DB_FLOOR;
+    const x = pad.l + i * col + col * 0.15;
+    const y = yOfDb(db);
+    g.fillStyle = color(i === focus ? 'signal' : ghost ? 'line-strong' : 'brass');
+    g.fillRect(x, y, col * 0.7, h - pad.b - y);
+    if (i % 2 === 0 || n <= 12) {
+      g.fillStyle = color('muted');
+      g.fillText(String(i + 1), x + col * 0.35 - g.measureText(String(i + 1)).width / 2, h - 5);
+    }
+  });
+  return {
+    at(px, py) {
+      const i = Math.floor((px - pad.l) / col);
+      const db = ((py - pad.t) / (h - pad.t - pad.b)) * DB_FLOOR;
+      const amp = db <= DB_FLOOR + 1.5 ? 0 : 10 ** (Math.min(0, db) / 20);
+      return { index: Math.max(0, Math.min(n - 1, i)), amp: Math.round(amp * 1000) / 1000 };
+    },
+  };
+}
+
+/** 한 주기 파형 (작은 미리보기). */
+export function drawCycle(canvas, cycle) {
+  const { g, w, h } = fit(canvas);
+  g.strokeStyle = color('grid');
+  g.beginPath();
+  g.moveTo(0, h / 2 + 0.5);
+  g.lineTo(w, h / 2 + 0.5);
+  g.stroke();
+  g.strokeStyle = color('signal');
+  g.lineWidth = 2;
+  g.beginPath();
+  cycle.forEach((v, i) => {
+    const x = (i / (cycle.length - 1)) * w;
+    const y = h / 2 - v * (h / 2 - 6);
+    if (i) g.lineTo(x, y); else g.moveTo(x, y);
+  });
+  g.stroke();
+}
+
+/**
+ * 끄는 ADSR: 어택·디케이·릴리즈는 각자 칸 안에서 로그 눈금, 서스테인은 높이.
+ * u(key, v) -> 0..1 (슬라이더와 같은 눈금), 돌려주는 handles 로 무엇을 잡았는지 찾는다.
+ */
+export function drawAdsr(canvas, env, u, accent = 'brass') {
+  const { g, w, h } = fit(canvas);
+  const pad = 10;
+  const seg = (w - 2 * pad) * 0.27;
+  const top = pad + 6;
+  const bottom = h - pad - 10;
+  const ySus = bottom - env.s * (bottom - top);
+  const xA = pad + Math.max(4, u('a', env.a) * seg);
+  const xD = xA + Math.max(4, u('d', env.d) * seg);
+  const xS = xD + (w - 2 * pad) * 0.15;
+  const xR = xS + Math.max(4, u('r', env.r) * seg);
+  grid(g, w, h, 4, 2);
+  g.fillStyle = color(`${accent}-wash`);
+  g.strokeStyle = color(accent);
+  g.lineWidth = 2;
+  g.beginPath();
+  g.moveTo(pad, bottom);
+  g.lineTo(xA, top);
+  g.quadraticCurveTo(xA + (xD - xA) * 0.25, ySus, xD, ySus);
+  g.lineTo(xS, ySus);
+  g.quadraticCurveTo(xS + (xR - xS) * 0.2, bottom, xR, bottom);
+  g.stroke();
+  g.lineTo(pad, bottom);
+  g.fill();
+  const handles = { a: [xA, top], d: [xD, ySus], s: [xS, ySus], r: [xR, bottom] };
+  g.font = `11px ${color('font-data')}`;
+  for (const [k, [x, y]] of Object.entries(handles)) {
+    g.fillStyle = color('ink');
+    g.strokeStyle = color(accent);
+    g.lineWidth = 2;
+    g.beginPath();
+    g.arc(x, y, 7, 0, Math.PI * 2);
+    g.fill();
+    g.stroke();
+    g.fillStyle = color('muted');
+    g.fillText(k.toUpperCase(), x - 3, k === 'r' ? y - 10 : y + 20 > h ? y - 10 : y + 20);
+  }
+  return { handles, geo: { pad, seg, top, bottom, xA, xD, xS } };
+}
+
+/** 필터 곡선 + 손잡이(가로 = 차단 주파수, 세로 = 레조넌스). */
+export function drawFilterEditor(canvas, filter, qUnit) {
+  drawFilter(canvas, filter);
+  const { g, w, h } = (() => {
+    const c = canvas.getContext('2d');
+    return { g: c, w: canvas.clientWidth, h: canvas.clientHeight };
+  })();
+  const x = (Math.log(filter.cutoff / 20) / Math.log(1000)) * w;
+  const y = 8 + (1 - qUnit) * (h - 16);
+  g.fillStyle = color('ink');
+  g.strokeStyle = color('brass');
+  g.lineWidth = 2.5;
+  g.beginPath();
+  g.arc(x, y, 8, 0, Math.PI * 2);
+  g.fill();
+  g.stroke();
+  return { handle: [x, y] };
+}

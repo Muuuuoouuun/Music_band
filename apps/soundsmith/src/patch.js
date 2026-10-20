@@ -28,7 +28,10 @@ export const WAVES = [
   { id: 'warm', label: '따뜻한' },
   { id: 'choir', label: '합창' },
   { id: 'organ', label: '오르간' },
+  { id: 'custom', label: '직접 그림' },
 ];
+
+export const HARMONIC_COUNT = 24;
 
 // 직접 만든 파형의 배음 세기 (사인 성분, 1번 = 기본음)
 export const HARMONICS = {
@@ -47,8 +50,22 @@ export const HARMONICS = {
   })(),
 };
 
+/** 파형의 배음 세기 24개 (최대 1). '직접 그림'을 시작할 때 지금 파형에서 출발한다. */
+export function harmonicsOf(id, custom = null) {
+  let h;
+  if (id === 'custom' && custom) h = custom.slice(0, HARMONIC_COUNT);
+  else if (id === 'sine') h = [1];
+  else if (id === 'sawtooth') h = Array.from({ length: HARMONIC_COUNT }, (_, i) => 1 / (i + 1));
+  else if (id === 'square') h = Array.from({ length: HARMONIC_COUNT }, (_, i) => ((i + 1) % 2 ? 1 / (i + 1) : 0));
+  else if (id === 'triangle') h = Array.from({ length: HARMONIC_COUNT }, (_, i) => ((i + 1) % 2 ? 1 / (i + 1) ** 2 : 0));
+  else h = HARMONICS[id] ?? [1];
+  const out = Array.from({ length: HARMONIC_COUNT }, (_, i) => Math.max(0, h[i] ?? 0));
+  const top = Math.max(...out) || 1;
+  return out.map((v) => Math.round((v / top) * 1000) / 1000);
+}
+
 /** 파형 한 주기 (그림용). n 개 점, -1..1. */
-export function waveCycle(id, n = 64) {
+export function waveCycle(id, n = 64, custom = null) {
   const out = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const x = i / n;
@@ -57,7 +74,7 @@ export function waveCycle(id, n = 64) {
     else if (id === 'sawtooth') out[i] = 2 * ((x + 0.5) % 1) - 1;
     else if (id === 'square') out[i] = x < 0.5 ? 1 : -1;
     else {
-      const h = HARMONICS[id] || [1];
+      const h = id === 'custom' ? harmonicsOf('custom', custom) : HARMONICS[id] || [1];
       out[i] = h.reduce((s, a, k) => s + a * Math.sin(2 * Math.PI * (k + 1) * x), 0);
     }
   }
@@ -147,6 +164,7 @@ export const BASE_PATCH = {
   glide: 0,
   mono: false,
   volume: 0.8,
+  custom: harmonicsOf('choir'),
 };
 
 export function getPath(obj, path) {
@@ -179,6 +197,9 @@ export function normalizePatch(input = {}) {
     out = setPath(out, path, clampParam(spec, getPath(src, path), getPath(BASE_PATCH, path)));
   }
   out.name = typeof src.name === 'string' && src.name.trim() ? src.name.trim().slice(0, 40) : BASE_PATCH.name;
+  out.custom = Array.isArray(src.custom) && src.custom.length === HARMONIC_COUNT && src.custom.every(Number.isFinite)
+    ? src.custom.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 1000) / 1000)
+    : BASE_PATCH.custom.slice();
   out.category = CATEGORIES.some((c) => c.id === src.category) ? src.category : BASE_PATCH.category;
   return out;
 }
@@ -370,4 +391,41 @@ export function mutatePatch(patch, amount = 0.3, seed = Date.now()) {
   }
   p.name = `${patch.name.replace(/ 변주\d*$/, '')} 변주`.slice(0, 40);
   return normalizePatch(p);
+}
+
+// ---------------------------------------------------------------------------
+// 지금 소리를 한두 문장으로 (실험실 '지금 소리' 칸). 숫자 부분은 굵게 보이도록 조각으로 돌려준다.
+// ---------------------------------------------------------------------------
+
+const NOUN = { pad: '패드예요', keys: '건반 소리예요', strings: '현악 소리예요', bell: '벨 소리예요', bass: '베이스예요', lead: '리드 소리예요', pluck: '플럭 소리예요' };
+
+export function describePatch(p) {
+  const parts = [];
+  const say = (text, strong = false) => parts.push({ text, strong });
+  const bright = p.source === 'pluck' ? 600 + p.pluck.bright * 9000 : p.filter.type === 'lowpass' ? p.filter.cutoff * 2 ** (p.filter.env * 0.5) : 4000;
+  const tone = bright < 700 ? '어둡고 부드러운' : bright < 2500 ? '따뜻한' : bright < 7000 ? '또렷한' : '반짝이는';
+  say(`${p.fx.drive > 0.3 ? '거칠고 ' : ''}${tone}`, true);
+  say(` ${p.source === 'pluck' ? '줄 뜯는 소리예요' : p.source === 'sample' ? '샘플 소리예요' : NOUN[p.category] ?? '소리예요'}. `);
+  const a = p.ampEnv.a;
+  if (a < 0.02) say('누르자마자 소리가 나고');
+  else if (a < 0.3) say('부드럽게 시작하고');
+  else {
+    say(`${a.toFixed(1)}초`, true);
+    say('에 걸쳐 천천히 커지고');
+  }
+  const rv = p.fx.reverb;
+  say(rv < 0.15 ? ', 가까이서 울려요. ' : rv < 0.4 ? ', 작은 방처럼 울려요. ' : rv < 0.65 ? ', 넓은 홀처럼 울려요. ' : ', 큰 예배당처럼 길게 울려요. ');
+  const decays = p.source !== 'pluck' && p.ampEnv.s < 0.1;
+  if (decays) {
+    say('누르고 있어도 ');
+    say(`${p.ampEnv.d.toFixed(1)}초`, true);
+    say('쯤이면 잦아들어요.');
+  } else if (p.ampEnv.r >= 1) {
+    say('손을 떼면 ');
+    say(`${p.ampEnv.r.toFixed(1)}초`, true);
+    say(' 동안 남아요.');
+  } else say(p.ampEnv.r >= 0.3 ? '손을 떼면 짧게 남아요.' : '손을 떼면 바로 멈춰요.');
+  if (p.lfo.depth > 0.12) say({ pitch: ' 음이 살짝 떨려요(비브라토).', filter: ' 밝기가 숨 쉬듯 천천히 변해요.', amp: ' 소리가 물결처럼 흔들려요.' }[p.lfo.target]);
+  else if (p.fx.chorus > 0.4) say(' 좌우로 넓게 퍼져요.');
+  return parts;
 }

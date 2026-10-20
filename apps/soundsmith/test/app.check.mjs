@@ -1,5 +1,6 @@
-// 브라우저에서 화면 전체를 눌러 보는 확인: 네 화면을 열고, 건반을 치고, 랜덤·변주·되돌리기,
-// 데모 샘플 루프, 루퍼 재생·녹음, 튜닝 변경을 해 본다. 콘솔 오류가 하나라도 나면 실패.
+// 브라우저에서 화면 전체를 눌러 보는 확인 (데스크톱·휴대폰 크기):
+// 예배 무대(패드·숫자 키·밝기×공간 판·다음 곡·루퍼 줄), 실험실(쓰임새·카드·도우미·배음 그리기·필터 끌기·
+// 패드/루퍼로 보내기), 샘플러 데모, 루퍼 녹음·실행 취소, 튜닝. 콘솔 오류나 가로 넘침이 있으면 실패.
 // 실행: npm start 로 서버를 띄운 뒤 node test/app.check.mjs  (SHOTS=폴더 를 주면 화면을 저장)
 import { chromium, launchOptions } from './browser.mjs';
 
@@ -8,92 +9,155 @@ const shots = process.env.SHOTS;
 const browser = await chromium.launch(launchOptions);
 const errors = [];
 const results = {};
+// 끌기 전에 화면 가운데로 (아래 건반 띠에 가리지 않게)
+const boxOf = async (page, sel) => {
+  await page.locator(sel).first().evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  return page.locator(sel).first().boundingBox();
+};
+const S = (page) => page.evaluate(() => {
+  const a = window.soundsmith;
+  return { presetId: a.presetId, name: a.patch.name, cutoff: a.patch.filter.cutoff, reverb: a.patch.fx.reverb, q: a.patch.filter.q, wave0: a.patch.osc[0].wave, transpose: a.tuning.transpose, voices: a.live?.voiceCount ?? 0, sounding: a.live?.voices.size ?? 0, hold: a.keyboard.hold };
+});
+
 for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 400, height: 860, name: 'phone' }]) {
   const page = await browser.newPage({ viewport });
   page.on('console', (m) => m.type() === 'error' && errors.push(`${viewport.name}: ${m.text()}`));
   page.on('pageerror', (e) => errors.push(`${viewport.name}: ${e.message}`));
   await page.goto(url);
   await page.waitForTimeout(400);
-  const overflow = async () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  const shot = async (name) => shots && page.screenshot({ path: `${shots}/${viewport.name}-${name}.png`, fullPage: viewport.name === 'desktop' });
   const r = (results[viewport.name] = {});
-  if (shots) await page.screenshot({ path: `${shots}/${viewport.name}-synth.png`, fullPage: viewport.name === 'desktop' });
-  r.synthOverflow = await overflow();
+
+  // ---- 예배 무대 ----
+  r.startTab = await page.evaluate(() => window.soundsmith.tab);
+  await shot('stage');
+  r.stageOverflow = await overflow();
   await page.click('#power');
   await page.waitForTimeout(200);
   r.running = await page.evaluate(() => window.soundsmith.studio.running);
-  // 건반: 컴퓨터 키보드와 화면 건반
   await page.keyboard.down('a');
   await page.keyboard.down('d');
   await page.waitForTimeout(150);
-  r.voicesHeld = await page.evaluate(() => window.soundsmith.live.voiceCount);
+  r.voicesHeld = (await S(page)).voices;
   await page.keyboard.up('a');
   await page.keyboard.up('d');
-  const key = page.locator('.key.white').nth(4);
-  await key.click();
-  r.readout = await page.textContent('.dock-readout');
-  // 랜덤·변주·되돌리기
-  const before = await page.evaluate(() => window.soundsmith.patch.name);
+  await page.keyboard.press('4');
+  r.digit4 = (await S(page)).presetId;
+  await page.locator('.pad', { hasText: '교회 오르간' }).click();
+  r.padClick = (await S(page)).presetId;
+  const before = await S(page);
+  const box = await boxOf(page, '.xy');
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.85, box.y + box.height * 0.15, { steps: 6 });
+  await page.mouse.up();
+  const after = await S(page);
+  r.xyBrighter = after.cutoff > before.cutoff && after.reverb > before.reverb && after.presetId === 'church-organ';
+  await page.click('text=다음 곡 ▶');
+  r.nextSong = (await S(page)).presetId;
+  await page.click('.stage-btn.big >> text=패드 홀드');
+  r.hold = (await S(page)).hold;
+  await page.click('.stage-btn.big >> text=패드 홀드');
+  await page.click('.strip .strip-btn >> nth=0');
+  await page.waitForTimeout(700);
+  r.stripPlaying = await page.evaluate(() => window.soundsmith.looper.info().playing);
+  await page.click('.strip .strip-btn >> nth=0');
+  await page.click('text=세트 편집');
+  await page.fill('.set-add .text-input', '주 은혜임을');
+  await page.click('text=지금 음색으로 추가');
+  r.songs = await page.locator('.song').count();
+  r.setOverflow = await overflow();
+  await page.click('text=세트 편집');
+
+  // ---- 실험실 ----
+  await page.click('.tab[data-tab="lab"]');
+  await page.locator('.use-chip', { hasText: '기도회·묵상' }).click();
+  r.prayerCards = await page.locator('.card').count();
+  await page.locator('.card', { hasText: '공기 패드' }).click();
+  r.cardPick = (await S(page)).presetId;
+  r.summary = await page.textContent('.summary');
+  await page.locator('.use-chip', { hasText: '전체' }).click();
+  await shot('lab');
+  r.labOverflow = await overflow();
+  const c0 = (await S(page)).cutoff;
+  await page.locator('.macro-range').first().fill('900');
+  r.macroBrighter = (await S(page)).cutoff > c0;
+  const n0 = (await S(page)).name;
   await page.click('text=랜덤 만들기');
   await page.click('text=변주');
-  r.afterRandom = await page.evaluate(() => window.soundsmith.patch.name);
-  await page.click('text=되돌리기');
-  await page.click('text=되돌리기');
-  r.undoBack = (await page.evaluate(() => window.soundsmith.patch.name)) === before;
-  // 도우미 슬라이더
-  const cutoff0 = await page.evaluate(() => window.soundsmith.patch.filter.cutoff);
-  await page.locator('.macro-range').first().fill('900');
-  r.macroBrighter = (await page.evaluate(() => window.soundsmith.patch.filter.cutoff)) > cutoff0;
-  // 프리셋 고르기
-  await page.locator('.lib-item', { hasText: '어쿠스틱 기타' }).click();
-  r.source = await page.evaluate(() => window.soundsmith.patch.source);
-  await page.keyboard.down('g');
-  await page.waitForTimeout(80);
-  await page.keyboard.up('g');
-  // 샘플러: 데모 소리
+  await page.click('.lab-shape >> text=되돌리기');
+  await page.click('.lab-shape >> text=되돌리기');
+  r.undoBack = (await S(page)).name === n0 && (await S(page)).presetId === 'air-pad';
+  await page.click('text=C 코드로 들어 보기');
+  await page.waitForTimeout(200);
+  r.audition = (await S(page)).sounding;
+  // 배음 그리기
+  await page.locator('.flow-node').filter({ has: page.locator('.flow-title:text-is("오실레이터 1")') }).click();
+  const hb = await boxOf(page, '.harm-canvas');
+  await page.mouse.move(hb.x + hb.width * 0.3, hb.y + hb.height * 0.4);
+  await page.mouse.down();
+  await page.mouse.move(hb.x + hb.width * 0.6, hb.y + hb.height * 0.2, { steps: 5 });
+  await page.mouse.up();
+  r.wave0 = (await S(page)).wave0;
+  await shot('lab-draw');
+  // 필터 끌기
+  await page.locator('.flow-node').filter({ has: page.locator('.flow-title:text-is("필터")') }).click();
+  const fb = await boxOf(page, '.graph-canvas');
+  const f0 = await S(page);
+  await page.mouse.move(fb.x + fb.width * 0.5, fb.y + fb.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(fb.x + fb.width * 0.8, fb.y + fb.height * 0.2, { steps: 4 });
+  await page.mouse.up();
+  const f1 = await S(page);
+  r.filterDrag = f1.cutoff !== f0.cutoff && f1.q > f0.q;
+  r.labDetailOverflow = await overflow();
+  // 패드·루퍼로 보내기
+  await page.click('text=무대 패드에 올리기');
+  r.padAssigned = await page.evaluate(() => window.soundsmith.stage.pads[0].startsWith('u'));
+  await page.click('text=루퍼로 보내기');
+  r.trackSound = await page.evaluate(() => window.soundsmith.looper.state.tracks[3].sound?.label === window.soundsmith.patch.name);
+
+  // ---- 샘플러 ----
   await page.click('.tab[data-tab="sampler"]');
   await page.click('text=데모 소리');
   await page.waitForTimeout(300);
-  r.sample = await page.evaluate(() => {
-    const s = window.soundsmith.sample;
-    return { root: s.rootName, fine: s.fine, mode: s.loopMode, seam: window.soundsmith.bakedSample.seamCost, source: window.soundsmith.patch.source };
-  });
+  r.sample = await page.evaluate(() => ({ root: window.soundsmith.sample.rootName, source: window.soundsmith.patch.source }));
   await page.keyboard.down('h');
   await page.waitForTimeout(120);
-  r.sampleVoice = await page.evaluate(() => window.soundsmith.live.voiceCount);
+  r.sampleVoice = (await S(page)).voices;
   await page.keyboard.up('h');
   r.samplerOverflow = await overflow();
-  if (shots) await page.screenshot({ path: `${shots}/${viewport.name}-sampler.png`, fullPage: viewport.name === 'desktop' });
-  // 루퍼: 재생, 녹음(카운트 후), 정지
+  await shot('sampler');
+
+  // ---- 루퍼 ----
   await page.click('.tab[data-tab="looper"]');
-  await page.click('text=▶ 재생');
-  await page.waitForTimeout(1200);
-  r.looperVoices = await page.evaluate(() => [...document.querySelectorAll('.track')].length);
-  r.pos = await page.textContent('.pos');
-  r.looperOverflow = await overflow();
-  if (shots) await page.screenshot({ path: `${shots}/${viewport.name}-looper.png`, fullPage: viewport.name === 'desktop' });
-  // 재생 중에 4번 트랙에 바로 녹음: 두 음을 치고 멈춘 뒤, 실행 취소
-  await page.click('.transport-btn.rec');
+  await page.click('#view-looper >> text=▶ 재생');
+  await page.waitForTimeout(900);
+  await page.click('#view-looper .transport-btn.rec');
   for (const k of ['a', 'g']) {
     await page.keyboard.down(k);
     await page.waitForTimeout(250);
     await page.keyboard.up(k);
   }
-  await page.click('.transport-btn.rec');
-  r.recorded = await page.evaluate(() => window.soundsmith.looper.state.tracks[3].notes.map((n) => n.midi));
+  await page.click('#view-looper .transport-btn.rec');
+  r.recorded = await page.evaluate(() => window.soundsmith.looper.state.tracks[3].notes.map((n) => n.midi).join());
   await page.locator('.track').nth(3).locator('text=실행 취소').click();
   r.afterUndo = await page.evaluate(() => window.soundsmith.looper.state.tracks[3].notes.length);
-  await page.click('text=■ 정지');
-  // 튜닝
+  r.looperOverflow = await overflow();
+  await shot('looper');
+  await page.click('#view-looper >> text=■ 정지');
+
+  // ---- 튜닝 ----
   await page.click('.tab[data-tab="tuning"]');
   await page.click('.chip-btn[data-hz="442"]');
   await page.click('.temp-card[data-id="werckmeister3"]');
-  r.tuning = await page.evaluate(() => ({ a4: window.soundsmith.tuning.a4, t: window.soundsmith.tuning.temperament, a: window.soundsmith.studio.tuner.freq(69) }));
-  await page.click('text=평균율 ↔ 이 튜닝 번갈아 듣기');
-  await page.waitForTimeout(300);
+  r.tuning = await page.evaluate(() => ({ a: window.soundsmith.studio.tuner.freq(69), t: window.soundsmith.tuning.temperament }));
   r.tuningOverflow = await overflow();
-  if (shots) await page.screenshot({ path: `${shots}/${viewport.name}-tuning.png`, fullPage: viewport.name === 'desktop' });
+  await shot('tuning');
   await page.close();
 }
+
 console.log(JSON.stringify(results, null, 1));
 if (errors.length) {
   console.error('콘솔 오류:', errors);
@@ -101,16 +165,32 @@ if (errors.length) {
 }
 for (const [name, r] of Object.entries(results)) {
   const bad = [];
-  if (!r.running) bad.push('소리 켜기');
-  if (r.voicesHeld < 2) bad.push('두 음 동시');
-  if (!r.undoBack) bad.push('되돌리기');
-  if (!r.macroBrighter) bad.push('도우미 밝기');
-  if (r.source !== 'pluck') bad.push('프리셋');
-  if (r.sample?.root !== 'A2' || r.sample.source !== 'sample') bad.push('데모 샘플');
-  if (r.sampleVoice < 1) bad.push('샘플 연주');
-  if (r.recorded?.join() !== '60,67' || r.afterUndo !== 0) bad.push(`루퍼 녹음 ${r.recorded} / ${r.afterUndo}`);
-  if (r.tuning.a !== 442 || r.tuning.t !== 'werckmeister3') bad.push('튜닝');
-  for (const k of ['synthOverflow', 'samplerOverflow', 'looperOverflow', 'tuningOverflow']) if (r[k] > 0) bad.push(`${k}=${r[k]}`);
+  const expect = (ok, label) => ok || bad.push(label);
+  expect(r.startTab === 'stage', '첫 화면');
+  expect(r.running, '소리 켜기');
+  expect(r.voicesHeld >= 2, '두 음 동시');
+  expect(r.digit4 === 'dx-ep', '숫자 키 4');
+  expect(r.padClick === 'church-organ', '패드 누르기');
+  expect(r.xyBrighter, '밝기×공간 판');
+  expect(r.nextSong === 'dx-ep', '다음 곡');
+  expect(r.hold === true, '패드 홀드');
+  expect(r.stripPlaying === true, '루퍼 줄 재생');
+  expect(r.songs === 4, '곡 추가');
+  expect(r.prayerCards > 0 && r.prayerCards < 14, '쓰임새 거르기');
+  expect(r.cardPick === 'air-pad', '카드 고르기');
+  expect(/공기|패드예요/.test(r.summary) && /초/.test(r.summary), '지금 소리 설명');
+  expect(r.macroBrighter, '도우미 밝기');
+  expect(r.undoBack, '되돌리기');
+  expect(r.audition >= 4, '들어 보기');
+  expect(r.wave0 === 'custom', '배음 그리기');
+  expect(r.filterDrag, '필터 끌기');
+  expect(r.padAssigned, '패드에 올리기');
+  expect(r.trackSound, '루퍼로 보내기');
+  expect(r.sample.root === 'A2' && r.sample.source === 'sample', '데모 샘플');
+  expect(r.sampleVoice >= 1, '샘플 연주');
+  expect(r.recorded === '60,67' && r.afterUndo === 0, `루퍼 녹음 ${r.recorded}/${r.afterUndo}`);
+  expect(r.tuning.a === 442 && r.tuning.t === 'werckmeister3', '튜닝');
+  for (const k of Object.keys(r).filter((x) => x.endsWith('Overflow'))) expect(r[k] <= 0, `${k}=${r[k]}`);
   if (bad.length) {
     console.error(name, '실패:', bad.join(', '));
     process.exitCode = 1;

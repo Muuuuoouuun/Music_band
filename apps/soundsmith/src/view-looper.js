@@ -3,7 +3,7 @@ import { h, panel, nextId } from './ui.js';
 import { drawRoll } from './draw.js';
 import { Instrument } from './engine.js';
 import { LooperState, METERS, QUANTIZE, loopClock, barBeat, eventsInWindow, exampleLoop } from './looper.js';
-import { FACTORY } from './presets.js';
+import { factoryById } from './presets.js';
 
 const AHEAD = 0.12;
 const TICK_MS = 25;
@@ -13,10 +13,10 @@ export function LooperView(root, app) {
   const ex = exampleLoop();
   let clock = loopClock(ex);
   app.studio.bpm = clock.bpm;
-  const byName = (n) => FACTORY.find((f) => f.patch.name === n).patch;
-  ['워십 패드', '신스 베이스', 'DX 일렉피아노'].forEach((name, i) => {
+  ['worship-pad', 'synth-bass', 'dx-ep'].forEach((id, i) => {
+    const { patch } = factoryById(id);
     L.tracks[i].notes = ex.tracks[i].map((n) => ({ ...n }));
-    L.tracks[i].sound = { patch: byName(name), sample: null, label: name };
+    L.tracks[i].sound = { patch, sample: null, label: patch.name };
     L.tracks[i].example = true;
   });
   L.tracks[1].volume = 0.7;
@@ -59,7 +59,7 @@ export function LooperView(root, app) {
     const roll = h('canvas', { class: 'roll', 'aria-label': `${track.name} 음표` });
     const undo = h('button', { type: 'button', class: 'quiet small' }, '실행 취소');
     const clear = h('button', { type: 'button', class: 'quiet small' }, '지우기');
-    const take = h('button', { type: 'button', class: 'quiet small', title: '지금 음색 만들기 화면의 소리로 바꿈' }, '지금 음색으로');
+    const take = h('button', { type: 'button', class: 'quiet small', title: '지금 고른 음색(실험실·예배 무대)으로 바꿈' }, '지금 음색으로');
     arm.addEventListener('click', () => {
       if (rec.active && rec.track !== i) stopRecording();
       rec.track = i;
@@ -271,5 +271,20 @@ export function LooperView(root, app) {
   app.on('panic', stop);
   app.on('tempo', () => L.tracks.forEach((tr) => tr.inst?.syncTempo()));
   render();
-  return { stop, state: L };
+  // 예배 무대의 루퍼 줄과 실험실의 '루퍼로 보내기'가 쓰는 손잡이
+  return {
+    state: L,
+    stop,
+    play: () => play(),
+    toggleRecord: () => (rec.active ? stopRecording() : startRecording()),
+    sendSound(i) {
+      setSound(L.tracks[i]);
+      L.tracks[i].example = false;
+      render();
+    },
+    info() {
+      const b = t.playing && app.studio.ctx ? beatNow() : null;
+      return { playing: t.playing, recording: rec.active, counting: rec.counting, beat: b, inLoop: b == null || b < 0 ? null : b % clock.beats, clock, armed: rec.track, tracks: L.tracks };
+    },
+  };
 }

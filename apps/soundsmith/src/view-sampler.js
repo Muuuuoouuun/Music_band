@@ -110,7 +110,7 @@ export function SamplerView(root, app) {
     app.setSample(s);
     if (use && app.patch.source !== 'sample') {
       app.setParam('source', 'sample', 'change');
-      app.notice(`'${s.name}' 샘플을 건반에 걸었어요. 음색 만들기의 소리 재료가 '샘플'로 바뀌었어요.`);
+      app.notice(`'${s.name}' 샘플을 건반에 걸었어요. 실험실의 소리 재료가 '샘플'로 바뀌었어요.`);
     }
   };
   fileInput.addEventListener('change', async () => {

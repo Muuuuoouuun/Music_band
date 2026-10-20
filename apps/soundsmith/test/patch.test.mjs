@@ -113,3 +113,44 @@ test('파형 그림은 -1..1 로 맞춰진다', () => {
     assert.ok(Math.abs(Math.max(...c.map(Math.abs)) - 1) < 1e-6, w.id);
   }
 });
+
+test('직접 그린 파형: 배음 24개, 저장·불러오기, 잘못된 값은 기본', async () => {
+  const { harmonicsOf, HARMONIC_COUNT } = await import('../src/patch.js');
+  assert.equal(harmonicsOf('sine').length, HARMONIC_COUNT);
+  assert.deepEqual(harmonicsOf('sine').slice(0, 3), [1, 0, 0]);
+  assert.equal(harmonicsOf('square')[1], 0);
+  assert.equal(harmonicsOf('sawtooth')[3], 0.25);
+  const drawn = harmonicsOf('organ').map((v, i) => (i === 4 ? 0.8 : v));
+  const p = normalizePatch({ osc: [{ wave: 'custom' }], custom: drawn });
+  assert.equal(p.osc[0].wave, 'custom');
+  assert.deepEqual(p.custom, drawn);
+  assert.deepEqual(normalizePatch(JSON.parse(JSON.stringify(p))), p);
+  assert.deepEqual(normalizePatch({ custom: [1, 2] }).custom, BASE_PATCH.custom);
+  assert.equal(normalizePatch({ custom: Array(24).fill(3) }).custom[0], 1);
+  const c = waveCycle('custom', 64, drawn);
+  assert.ok(Math.abs(Math.max(...c.map(Math.abs)) - 1) < 1e-6);
+});
+
+test('지금 소리 설명: 기본 음색마다 문장이 되고 숫자는 굵게', async () => {
+  const { describePatch } = await import('../src/patch.js');
+  const { factoryById } = await import('../src/presets.js');
+  const text = (id) => describePatch(factoryById(id).patch).map((x) => x.text).join('');
+  assert.equal(text('worship-pad'), '따뜻한 패드예요. 1.4초에 걸쳐 천천히 커지고, 넓은 홀처럼 울려요. 손을 떼면 3.2초 동안 남아요. 밝기가 숨 쉬듯 천천히 변해요.');
+  assert.match(text('dx-ep'), /누르자마자 소리가 나고.*2\.8초쯤이면 잦아들어요/);
+  assert.match(text('acoustic-guitar'), /줄 뜯는 소리예요/);
+  for (const f of FACTORY) {
+    const parts = describePatch(f.patch);
+    assert.ok(parts.some((x) => x.strong), f.patch.name);
+    assert.ok(!parts.map((x) => x.text).join('').includes('undefined'), f.patch.name);
+  }
+});
+
+test('기본 음색 id·쓰임새', async () => {
+  const { USES } = await import('../src/presets.js');
+  assert.equal(new Set(FACTORY.map((f) => f.id)).size, FACTORY.length);
+  const ok = new Set(USES.map((u) => u.id));
+  for (const f of FACTORY) {
+    assert.ok(f.desc.length > 10, f.id);
+    assert.ok(f.uses.length && f.uses.every((u) => ok.has(u) && u !== 'all'), f.id);
+  }
+});

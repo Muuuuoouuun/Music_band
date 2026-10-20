@@ -2,18 +2,19 @@
 // 화면들은 app.on('patch' | 'tuning' | 'sample' ...) 으로 바뀐 것을 듣는다.
 import { Studio, Instrument } from './engine.js';
 import { normalizePatch, setPath } from './patch.js';
-import { FACTORY } from './presets.js';
+import { FACTORY, factoryById } from './presets.js';
 import { makeTuner, normalizeTuning, noteName, TEMPERAMENTS, NOTE_NAMES } from './tuning.js';
 import { bakeSample } from './sample.js';
 import { Keyboard } from './keyboard.js';
 import { drawScope } from './draw.js';
 import * as store from './store.js';
-import { SynthView } from './view-synth.js';
+import { StageView } from './view-stage.js';
+import { LabView } from './view-lab.js';
 import { SamplerView } from './view-sampler.js';
 import { LooperView } from './view-looper.js';
 import { TuningView } from './view-tuning.js';
 
-const TABS = ['synth', 'sampler', 'looper', 'tuning'];
+const TABS = ['stage', 'lab', 'sampler', 'looper', 'tuning'];
 
 class App {
   constructor() {
@@ -24,7 +25,8 @@ class App {
     this.patch = saved ? normalizePatch(saved) : FACTORY[0].patch;
     this.presetId = saved ? null : FACTORY[0].id;
     this.committed = this.patch;
-    this.history = [];
+    this.committedPresetId = this.presetId;
+    this.history = []; // [{ patch, presetId }]
     this.userPresets = (store.load('presets', []) || [])
       .filter((x) => x && typeof x.id === 'string' && x.patch)
       .map((x) => ({ id: x.id, patch: normalizePatch(x.patch) }));
@@ -35,7 +37,7 @@ class App {
     this.engineSample = null;
     this.live = null;
     this.keyTarget = null;
-    this.tab = 'synth';
+    this.tab = 'stage';
   }
 
   on(type, fn) {
@@ -76,11 +78,12 @@ class App {
     if (presetId !== undefined) this.presetId = presetId;
     this.patch = patch;
     if (phase === 'change' && JSON.stringify(this.committed) !== JSON.stringify(patch)) {
-      this.history.push(this.committed);
+      this.history.push({ patch: this.committed, presetId: this.committedPresetId });
       if (this.history.length > 60) this.history.shift();
       this.committed = patch;
       store.save('patch', patch);
     }
+    if (phase === 'change') this.committedPresetId = this.presetId;
     this.live?.setPatch(patch);
     this.emit('patch', { phase, keepMacros });
     this.renderHeader();
@@ -93,10 +96,12 @@ class App {
   undo() {
     const prev = this.history.pop();
     if (!prev) return;
-    this.committed = prev;
-    this.patch = prev;
-    store.save('patch', prev);
-    this.live?.setPatch(prev);
+    this.committed = prev.patch;
+    this.patch = prev.patch;
+    this.presetId = prev.presetId;
+    this.committedPresetId = prev.presetId;
+    store.save('patch', prev.patch);
+    this.live?.setPatch(prev.patch);
     this.emit('patch', { phase: 'change' });
     this.renderHeader();
   }
@@ -105,12 +110,45 @@ class App {
     this.setPatch(entry.patch, { phase: 'change', presetId: entry.id });
   }
 
+  /** 내 음색 또는 기본 음색 { id, patch, factory? } */
+  findPreset(id) {
+    if (!id) return null;
+    return this.userPresets.find((u) => u.id === id) ?? factoryById(id);
+  }
+
+  /** 지금 음색으로 화음을 잠깐 들려준다 (실험실 '들어 보기'). */
+  async audition(notes, seconds = 1.8) {
+    await this.ensureAudio();
+    const now = this.studio.ctx.currentTime + 0.03;
+    for (const m of notes) {
+      this.live.noteOn(m, 0.7, now);
+      this.live.noteOff(m, now + seconds);
+    }
+  }
+
+  /** 지금 음색을 무대 패드 k 에 올린다. 저장 안 된 음색이면 먼저 내 음색으로 저장한다. */
+  sendToPad(k) {
+    let entry = this.findPreset(this.presetId);
+    if (!entry || JSON.stringify(entry.patch) !== JSON.stringify(this.patch)) {
+      if (entry?.factory && this.patch.name === entry.patch.name) this.setPatch({ ...this.patch, name: `${this.patch.name} 수정` }, { phase: 'change', keepMacros: true });
+      this.savePreset({ quiet: true });
+      entry = this.findPreset(this.presetId);
+    }
+    this.stage.assignPad(k, entry.id);
+    this.notice(`'${entry.patch.name}' 음색을 예배 무대의 패드 ${k + 1}에 올렸어요.`, 'good');
+  }
+
+  sendToTrack(i) {
+    this.looper.sendSound(i);
+    this.notice(`루퍼 트랙 ${i + 1}에 '${this.patch.name}' 음색을 넣었어요. 루퍼에서 그 트랙을 골라 녹음하세요.`, 'good');
+  }
+
   rename(name) {
     const n = name.trim().slice(0, 40);
     if (n && n !== this.patch.name) this.setPatch({ ...this.patch, name: n }, { phase: 'change', keepMacros: true });
   }
 
-  savePreset() {
+  savePreset({ quiet = false } = {}) {
     const mine = this.userPresets.find((u) => u.id === this.presetId);
     if (mine) mine.patch = this.patch;
     else {
@@ -120,7 +158,8 @@ class App {
     }
     const ok = store.save('presets', this.userPresets);
     this.emit('presets');
-    this.notice(ok ? `'${this.patch.name}' 음색을 내 음색에 저장했어요. 이 브라우저에 남아요.` : `'${this.patch.name}' 음색을 목록에 넣었어요. 이 화면은 저장이 막혀 있어 새로고침하면 사라져요.`, ok ? 'good' : 'info');
+    this.emit('patch', { phase: 'change', keepMacros: true });
+    if (!quiet) this.notice(ok ? `'${this.patch.name}' 음색을 내 음색에 저장했어요. 이 브라우저에 남아요.` : `'${this.patch.name}' 음색을 목록에 넣었어요. 이 화면은 저장이 막혀 있어 새로고침하면 사라져요.`, ok ? 'good' : 'info');
   }
 
   deletePreset(id) {
@@ -193,6 +232,7 @@ class App {
   sustain(on) {
     this.live?.setSustain(on);
     this.keyTarget?.sustain(on);
+    this.emit('hold');
   }
 
   describe(midi, velocity) {
@@ -212,8 +252,9 @@ class App {
 
   // ---- 화면 ----
   showTab(id) {
-    if (!TABS.includes(id)) id = 'synth';
+    if (!TABS.includes(id)) id = 'stage';
     this.tab = id;
+    document.body.dataset.tab = id;
     for (const b of document.querySelectorAll('.tab')) b.setAttribute('aria-current', String(b.dataset.tab === id));
     for (const v of document.querySelectorAll('.view')) v.hidden = v.dataset.view !== id;
     try { history.replaceState(null, '', `#${id}`); } catch { /* 액자 안에서는 무시 */ }
@@ -237,9 +278,10 @@ class App {
 const app = new App();
 window.soundsmith = app; // 브라우저 검사용
 
-SynthView(document.getElementById('view-synth'), app);
+LabView(document.getElementById('view-lab'), app);
 SamplerView(document.getElementById('view-sampler'), app);
 app.looper = LooperView(document.getElementById('view-looper'), app);
+app.stage = StageView(document.getElementById('view-stage'), app);
 TuningView(document.getElementById('view-tuning'), app);
 app.keyboard = new Keyboard(document.getElementById('dock'), {
   noteOn: (m, v) => app.noteOn(m, v),
@@ -273,5 +315,5 @@ function frame(time) {
 }
 requestAnimationFrame(frame);
 
-app.showTab(location.hash.slice(1) || 'synth');
+app.showTab(location.hash.slice(1) || 'stage');
 app.renderHeader();

@@ -114,4 +114,37 @@ const RAW = [
   },
 ];
 
-export const FACTORY = RAW.map((p, i) => ({ id: `f${i + 1}`, factory: true, patch: normalizePatch(p) }));
+// 쓰임새: 실험실에서 '어떤 자리에 쓸까요?'로 고를 때
+export const USES = [
+  { id: 'all', label: '전체' },
+  { id: 'lead-under', label: '찬양 인도 밑에 깔기' },
+  { id: 'prayer', label: '기도회·묵상' },
+  { id: 'band', label: '밴드 합주' },
+  { id: 'hymn', label: '찬송가 반주' },
+  { id: 'solo', label: '솔로 멜로디' },
+];
+
+// 이름 -> [고정 id, 한 줄 설명, 쓰임새]. id 는 저장된 세트 리스트·무대 패드가 가리키므로 바꾸지 않는다.
+const META = {
+  '워십 패드': ['worship-pad', '천천히 커지고 길게 남는 따뜻한 패드. 인도자 목소리 밑에 깔기 좋아요.', ['lead-under', 'prayer']],
+  '공기 패드': ['air-pad', '숨소리가 섞인 높은 패드. 기도회·묵상 배경으로.', ['prayer']],
+  '스웰 스트링': ['swell-strings', '현악 합주처럼 부풀었다 사라져요. 후렴 빌드업에.', ['lead-under', 'band']],
+  '브라스 스웰': ['brass-swell', '금관이 밀고 올라오는 소리. 절정 부분에 짧게.', ['band']],
+  'DX 일렉피아노': ['dx-ep', '맑게 울리고 서서히 줄어드는 80년대 일렉피아노.', ['band', 'solo']],
+  '교회 오르간': ['church-organ', "파이프 오르간 8'·4'·2⅔' 스톱을 합친 소리. 찬송가 반주에.", ['hymn']],
+  'FM 벨': ['fm-bell', '종처럼 맑게 치고 오래 울려요. 전주·간주 포인트로.', ['solo', 'prayer']],
+  '유리 벨 패드': ['glass-bell-pad', '벨 소리 위에 합창 패드를 얹었어요. 잔잔한 묵상 곡에.', ['prayer', 'lead-under']],
+  '신스 베이스': ['synth-bass', '한 음씩 짧게 미끄러지는 베이스. 밴드에 베이스가 없을 때.', ['band']],
+  '서브 베이스': ['sub-bass', '귀보다 몸으로 느끼는 낮은 소리. 패드 밑을 받쳐요.', ['band', 'lead-under']],
+  '부드러운 리드': ['soft-lead', '노래하듯 이어지는 멜로디 소리. 간주 솔로에.', ['solo']],
+  '디지털 플럭': ['digital-pluck', '짧게 톡 튀고 딜레이가 따라와요. 리듬 아르페지오에.', ['band']],
+  '어쿠스틱 기타': ['acoustic-guitar', '줄을 실제로 계산해 뜯는 소리. 잔잔한 아르페지오에.', ['band', 'solo']],
+  '하프': ['harp', '길게 울리는 하프. 찬송가 전주나 분산화음에.', ['hymn', 'prayer']],
+};
+
+export const FACTORY = RAW.map((p) => {
+  const [id, desc, uses] = META[p.name];
+  return { id, factory: true, desc, uses, patch: normalizePatch(p) };
+});
+
+export const factoryById = (id) => FACTORY.find((f) => f.id === id) ?? null;

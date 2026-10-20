@@ -5,7 +5,7 @@ import { drawTuningBars, drawNeedle } from './draw.js';
 import { A4_PRESETS, NOTE_NAMES, TEMPERAMENTS, makeTuner, noteName, offsets, parseScala, degreesToCustom, exportScala } from './tuning.js';
 import { detectPitch } from './sample.js';
 import { Instrument } from './engine.js';
-import { FACTORY } from './presets.js';
+import { factoryById } from './presets.js';
 import { saveFile, copyText } from './store.js';
 
 export function TuningView(root, app) {
@@ -76,7 +76,7 @@ export function TuningView(root, app) {
   const abBtn = h('button', { type: 'button', class: 'primary' }, '평균율 ↔ 이 튜닝 번갈아 듣기');
   const abState = h('p', { class: 'ab-state', 'aria-live': 'polite' });
   async function chord(tuner, at) {
-    const organ = FACTORY.find((f) => f.patch.name === '교회 오르간').patch;
+    const organ = factoryById('church-organ').patch;
     const env = { ...app.studio.env(), tuner };
     const inst = new Instrument(env, { ...organ, fx: { ...organ.fx, reverb: 0.25 } });
     const r = 48 + app.tuning.root;
