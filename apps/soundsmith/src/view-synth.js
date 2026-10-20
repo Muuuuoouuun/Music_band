@@ -2,11 +2,13 @@
 // 어택·질감·공간·EQ).
 import {
   CATEGORIES, MACROS, RANDOM_KINDS, SOURCES, CUSTOM_LEN, MATCH_BANDS, applyMacro, normalizePatch, randomPatch, mutatePatch,
-  blendPatches, harmonicsOf, setPath, waveCycle,
+  blendPatches, harmonicsOf, setPath, waveCycle, REVERB_TYPES, DELAY_MODES,
 } from './patch.js';
 import { FACTORY } from './presets.js';
 import { h, panel, controlGroup, nextId, barEditor } from './ui.js';
-import { drawEnvelope, drawFilter, drawEq } from './draw.js';
+import { drawEnvelope, drawFilter, drawEq, drawTail } from './draw.js';
+import { renderTail } from './engine.js';
+import { tailStats } from './analyze.js';
 import { saveFile, copyText } from './store.js';
 
 const BAND_LABELS = MATCH_BANDS.map((f) => (f >= 1000 ? `${f / 1000}k` : String(f)));
@@ -199,11 +201,78 @@ export function SynthView(root, app) {
     cls: 'bar-canvas short',
   });
 
+  // ---- 들어 보기: 시험 연주와 이펙트 A/B ----
+  const PHRASES = [['note', '한 음'], ['chord', '화음'], ['arp', '아르페지오'], ['stab', '끊어 치기 (꼬리 듣기)']];
+  const phraseBtns = PHRASES.map(([kind, label]) => h('button', { type: 'button', 'aria-pressed': 'false', onclick: () => (app.phrase?.kind === kind ? app.stopPhrase() : app.playPhrase(kind)) }, `▶ ${label}`));
+  const bypassBtn = h('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false', onclick: () => app.setBypass(!app.bypass) }, '이펙트 끄고 듣기 (A/B)');
+  const benchState = h('p', { class: 'bench-state', 'aria-live': 'polite' });
+  const bench = panel('들어 보기', { cls: 'span-wide bench', hint: '건반 없이 지금 음색을 쳐 봐요. 값을 바꾸며 다시 누르고, A/B 로 이펙트가 하는 일을 견줘 보세요. 저장된 음색은 바뀌지 않아요.' },
+    h('div', { class: 'btn-row' }, ...phraseBtns, h('span', { class: 'bar-sep', 'aria-hidden': 'true' }), bypassBtn),
+    benchState);
+  const syncBench = () => {
+    phraseBtns.forEach((b, i) => {
+      const on = app.phrase?.kind === PHRASES[i][0];
+      b.setAttribute('aria-pressed', String(on));
+      b.textContent = `${on ? '■' : '▶'} ${PHRASES[i][1]}`;
+    });
+    bypassBtn.setAttribute('aria-pressed', String(app.bypass));
+    benchState.textContent = app.bypass ? '지금은 이펙트(드라이브·로파이·페이저·코러스·딜레이·잔향·쉬머·컴프·EQ·폭)를 뺀 소리예요. 다시 누르면 원래대로.' : '';
+  };
+  app.on('phrase', syncBench);
+  app.on('bypass', syncBench);
+
+  // ---- 잔향·딜레이 꼬리 재기: 짧은 소리를 이펙트 줄에 넣어 젖은 소리만 잰다 ----
+  const tailCanvas = h('canvas', { class: 'tail-canvas', 'aria-label': '이펙트 꼬리: 짧은 소리 하나를 넣었을 때 시간에 따른 크기' });
+  const tailRead = h('dl', { class: 'facts tail-facts' });
+  const typeHint = h('p', { class: 'source-hint' });
+  const modeHint = h('p', { class: 'source-hint' });
+  let tailSeq = 0;
+  let tailSig = '';
+  let tailTimer = null;
+  let lastTail = null;
+  const tailFields = ['delay', 'delayBeats', 'feedback', 'delayMode', 'delayTone', 'reverb', 'reverbType', 'size', 'predelay', 'damp', 'tone', 'width', 'drive', 'lofi', 'comp'];
+  async function measureTail() {
+    const fx = app.patch.fx;
+    const sig = JSON.stringify([tailFields.map((k) => fx[k]), app.studio.bpm, app.patch.eq]);
+    if (sig === tailSig) return;
+    tailSig = sig;
+    const seq = ++tailSeq;
+    tailCanvas.dataset.busy = 'true';
+    const r = await renderTail(app.patch, { bpm: app.studio.bpm });
+    if (seq !== tailSeq) return;
+    delete tailCanvas.dataset.busy;
+    lastTail = tailStats([r.full.getChannelData(0), r.full.getChannelData(1)], [r.dry.getChannelData(0), r.dry.getChannelData(1)], r.full.sampleRate, { start: r.start });
+    drawTail(tailCanvas, lastTail);
+    const st = lastTail;
+    const rows = st.silent
+      ? [['꼬리', '딜레이·잔향이 꺼져 있어요']]
+      : [
+        ['꼬리 길이', st.rt60 ? `${st.rt60.toFixed(2)} s (60dB 줄어드는 시간)` : '재기 어려움'],
+        ['시작', `${Math.round(st.onset * 1000)} ms 뒤`],
+        ['크기', `직접음보다 ${st.wetDb >= 0 ? '+' : ''}${st.wetDb.toFixed(1)} dB`],
+        ['좌우 넓이', `${Math.round(Math.min(1, st.width) * 100)}%`],
+      ];
+    const ech = st.echoes.filter((e) => e.t > 0.05);
+    if (app.patch.fx.delay > 0.001 && ech.length >= 2) {
+      const sides = ech.slice(0, 4).map((e) => e.left - e.right);
+      const alt = sides.length >= 2 && sides.every((d, i) => Math.abs(d) > 6 && (i === 0 || Math.sign(d) !== Math.sign(sides[i - 1])));
+      rows.push(['딜레이', `반복 ${ech.length}번 보임 · 간격 ${Math.round((ech[1].t - ech[0].t) * 1000)} ms${alt ? ' · 좌우 번갈아' : ''}`]);
+    }
+    tailRead.replaceChildren(...rows.flatMap(([dt, dd]) => [h('dt', {}, dt), h('dd', {}, dd)]));
+  }
+  const scheduleTail = () => {
+    clearTimeout(tailTimer);
+    tailTimer = setTimeout(() => {
+      if (app.tab === 'synth' && !document.hidden) measureTail();
+    }, 280);
+  };
+
   // ---- 모듈 ----
   const sourceHint = h('p', { class: 'source-hint' });
   const toSampler = h('button', { type: 'button', class: 'link-btn', onclick: () => app.showTab('sampler') }, '샘플러 화면으로 →');
   const envCanvas = (key) => (canvases[key] = h('canvas', { class: 'env-canvas', 'aria-hidden': 'true' }));
   const modules = h('div', { class: 'modules' },
+    bench,
     panel('소리 재료', { cls: 'span-wide' }, ctl.seg('source'), sourceHint, toSampler),
     (sourcePanels.osc0 = panel('오실레이터 1', { hint: '기본 소리. 겹치기를 늘리면 합창처럼 두꺼워짐' },
       ctl.seg('osc.0.wave', { icons: true, iconFor }), ctl.add('osc.0.octave'), ctl.add('osc.0.semi'), ctl.add('osc.0.detune'),
@@ -229,9 +298,14 @@ export function SynthView(root, app) {
       ctl.add('click'), ctl.add('clickTone'), ctl.add('drift'), ctl.add('vel.amp'), ctl.add('vel.filter')),
     panel('질감', { hint: '드라이브는 따뜻한 찌그러짐, 로파이는 옛 샘플러 느낌, 페이저는 천천히 도는 골' },
       ctl.add('fx.drive'), ctl.add('fx.lofi'), ctl.add('fx.phaser'), ctl.add('fx.phaserRate'), ctl.add('fx.chorus'), ctl.add('fx.comp')),
-    panel('딜레이 · 공간', { hint: '딜레이 간격은 루퍼의 BPM 을 따름. 쉬머는 한 옥타브 위 소리를 잔향으로만 보내 반짝이는 꼬리를 만듦' },
-      ctl.add('fx.delay'), ctl.seg('fx.delayBeats'), ctl.add('fx.feedback'),
-      ctl.add('fx.reverb'), ctl.add('fx.size'), ctl.add('fx.predelay'), ctl.add('fx.tone'), ctl.add('fx.shimmer'), ctl.add('fx.width')),
+    panel('딜레이', { hint: '간격은 루퍼의 BPM 을 따름. 밝기를 낮추면 반복될수록 멀어지는 소리' },
+      ctl.add('fx.delay'), ctl.seg('fx.delayMode'), modeHint, ctl.seg('fx.delayBeats'), ctl.add('fx.feedback'), ctl.add('fx.delayTone')),
+    panel('잔향 · 공간', { cls: 'span-2', hint: '아래 그림은 짧은 소리 하나를 넣어 실제로 잰 꼬리예요 (청록 = 딜레이+잔향). 값을 바꾸면 다시 재요. 쉬머는 한 옥타브 위 소리를 잔향으로만 보내 반짝이는 꼬리를 만들고 건반 음에서 들려요' },
+      tailCanvas, tailRead,
+      ctl.seg('fx.reverbType'), typeHint,
+      h('div', { class: 'ctl-grid' },
+        ctl.add('fx.reverb'), ctl.add('fx.size'), ctl.add('fx.predelay'), ctl.add('fx.damp'),
+        ctl.add('fx.tone'), ctl.add('fx.shimmer'), ctl.add('fx.width'))),
     panel('EQ · 맞춤 EQ', {
       hint: '위 곡선은 실제로 들리는 EQ 전체. 맞춤 EQ 는 음원 따라 만들기가 원음의 톤 균형에 맞춰 채우고, 막대를 끌어 고칠 수 있어요',
       actions: h('button', { type: 'button', class: 'quiet small', onclick: () => app.setParam('eq.match', MATCH_BANDS.map(() => 0)) }, '맞춤 EQ 지우기'),
@@ -261,6 +335,9 @@ export function SynthView(root, app) {
     const p = app.patch;
     ctl.sync();
     redraw();
+    typeHint.textContent = REVERB_TYPES.find((t) => t.id === p.fx.reverbType).hint;
+    modeHint.textContent = DELAY_MODES.find((m) => m.id === p.fx.delayMode).hint;
+    scheduleTail();
     if (phase === 'input') return;
     if (document.activeElement !== nameInput) nameInput.value = p.name;
     catSelect.value = p.category;
@@ -281,6 +358,7 @@ export function SynthView(root, app) {
   app.on('sample', () => sync({ keepMacros: true }));
   app.on('resize', () => {
     redraw();
+    drawTail(tailCanvas, lastTail);
     harmEditor.sync();
     matchEditor.sync();
   });
@@ -288,7 +366,12 @@ export function SynthView(root, app) {
     redraw();
     harmEditor.sync();
     matchEditor.sync();
+    drawTail(tailCanvas, lastTail);
+    scheduleTail();
   }));
+  app.on('tempo', scheduleTail);
+  app.tail = () => lastTail; // 브라우저 검사용
   sync();
+  syncBench();
   return { sync };
 }

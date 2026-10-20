@@ -546,3 +546,59 @@ export function drawEq(canvas, eq, bands) {
   ['100', '1k', '10k'].forEach((t, i) => g.fillText(t, ((Math.log([100, 1000, 10000][i] / 20) / Math.log(1000)) * w) + 3, h - 4));
   g.fillText('±18dB', w - 44, 12);
 }
+
+/**
+ * 이펙트 꼬리: 짧은 소리 하나를 넣은 뒤 시간에 따른 크기(dB). 흐린 선 = 전체, 청록 = 젖은 소리(딜레이+잔향).
+ * 금색 점선 = 젖은 소리가 시작되는 때, 작은 눈금 = 딜레이 반복.
+ */
+export function drawTail(canvas, stats) {
+  const { g, w, h } = fit(canvas);
+  grid(g, w, h, 4, 4);
+  if (!stats) return;
+  const { frame, start, full, wet } = stats.curve;
+  const n = full.length;
+  const total = n * frame;
+  // 높이는 젖은 소리에 맞춘다 (직접음 짧은 소리는 훨씬 커서 위로 잘려도 괜찮다). 꼬리를 젖은 봉우리 −60dB 까지 본다
+  const top = (stats.silent ? Math.max(...full) : Math.max(...wet)) + 6;
+  const range = 66;
+  const xOf = (t) => (t / total) * w;
+  const yOf = (db) => 4 + ((top - Math.max(top - range, db)) / range) * (h - 20);
+  const line = (vals, col, width) => {
+    g.strokeStyle = col;
+    g.lineWidth = width;
+    g.beginPath();
+    vals.forEach((v, i) => {
+      const x = xOf(i * frame);
+      if (i) g.lineTo(x, yOf(v)); else g.moveTo(x, yOf(v));
+    });
+    g.stroke();
+  };
+  line(full, color('line-strong'), 1.5);
+  if (!stats.silent) {
+    g.fillStyle = color('signal-wash');
+    g.beginPath();
+    g.moveTo(0, h);
+    wet.forEach((v, i) => g.lineTo(xOf(i * frame), yOf(v)));
+    g.lineTo(w, h);
+    g.closePath();
+    g.fill();
+    line(wet, color('signal'), 1.8);
+    if (stats.onset != null) {
+      g.strokeStyle = color('brass');
+      g.setLineDash([3, 3]);
+      g.beginPath();
+      const x = xOf(start + stats.onset);
+      g.moveTo(x, 0);
+      g.lineTo(x, h);
+      g.stroke();
+      g.setLineDash([]);
+    }
+    g.fillStyle = color('brass');
+    for (const e of stats.echoes) g.fillRect(xOf(start + e.t) - 1, h - 16, 2, 6);
+  }
+  g.fillStyle = color('muted');
+  g.font = `11px ${color('font-data')}`;
+  const step = total > 6 ? 2 : total > 2.5 ? 1 : 0.5;
+  for (let t = step; t < total; t += step) g.fillText(`${t}s`, xOf(t) + 2, h - 3);
+  g.fillText(`−${range - 6}dB`, 2, h - 3);
+}

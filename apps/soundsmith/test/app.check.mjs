@@ -1,4 +1,5 @@
 // 브라우저에서 화면 전체를 눌러 보는 확인: 다섯 화면을 열고, 건반을 치고, 랜덤·변주·되돌리기·섞기·배음 그리기,
+// 들어 보기(시험 연주·이펙트 A/B·잔향 꼬리 재기·잔향 종류), 샘플에 이펙트 굽기,
 // 음원 따라 만들기(예시 소리 → 닮은 음색·더 비슷하게·톤 입히기·샘플·늘리기), 데모 샘플 루프와 가공,
 // 루퍼 재생·녹음, 튜닝 변경을 해 본다. 콘솔 오류가 하나라도 나면 실패.
 // 실행: npm start 로 서버를 띄운 뒤 node test/app.check.mjs  (SHOTS=폴더 를 주면 화면을 저장)
@@ -57,6 +58,21 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.8, { steps: 6 });
   await page.mouse.up();
   r.drawn = await page.evaluate(() => ({ wave: window.soundsmith.patch.osc[0].wave, h4: window.soundsmith.patch.custom[4] }));
+  // 들어 보기: 시험 연주, 이펙트 A/B, 잔향 꼬리 재기, 잔향 종류 바꾸기
+  await page.locator('.lib-item', { hasText: '쉬머 패드' }).click();
+  await page.click('button:text-is("▶ 한 음")');
+  await page.waitForTimeout(150);
+  r.phrase = await page.evaluate(() => ({ kind: window.soundsmith.phrase?.kind, voices: window.soundsmith.live.voices.size })); // 놓는 때까지 미리 예약해 두어 '울리는 음' 수로 센다
+  await page.click('text=이펙트 끄고 듣기 (A/B)');
+  r.bypassOn = await page.evaluate(() => ({ heard: window.soundsmith.live.patch.fx.reverb, saved: window.soundsmith.patch.fx.reverb }));
+  await page.click('text=이펙트 끄고 듣기 (A/B)');
+  r.bypassOff = await page.evaluate(() => window.soundsmith.live.patch.fx.reverb);
+  await page.click('button:text-is("■ 한 음")').catch(() => {});
+  await page.waitForFunction(() => window.soundsmith.tail?.() && !window.soundsmith.tail().silent, null, { timeout: 15000 });
+  r.tailHall = await page.evaluate(() => window.soundsmith.tail().onset);
+  await page.click('.ctl-seg button:text-is("교회")');
+  await page.waitForFunction((before) => window.soundsmith.tail()?.onset > before + 0.01, r.tailHall, { timeout: 15000 });
+  r.tail = await page.evaluate(() => ({ type: window.soundsmith.patch.fx.reverbType, onset: window.soundsmith.tail().onset, text: document.querySelector('.tail-facts').textContent }));
   // 프리셋 고르기
   await page.locator('.lib-item', { hasText: '어쿠스틱 기타' }).click();
   r.source = await page.evaluate(() => window.soundsmith.patch.source);
@@ -82,6 +98,12 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   r.reversed = await page.evaluate(() => window.soundsmith.sample.name);
   await page.click('button:text-is("원래대로")');
   r.restored = await page.evaluate(() => window.soundsmith.sample.name);
+  // 녹음한 소리에 지금 음색의 이펙트 굽기 (어쿠스틱 기타 → 룸 잔향)
+  const lenBefore = await page.evaluate(() => window.soundsmith.sample.data.length);
+  await page.click('text=지금 음색의 이펙트 입히기');
+  await page.waitForFunction(() => window.soundsmith.sample.name.endsWith('+이펙트'), null, { timeout: 15000 });
+  r.fxSample = await page.evaluate((before) => ({ longer: window.soundsmith.sample.data.length > before, stereo: Boolean(window.soundsmith.sample.stereo) }), lenBefore);
+  await page.click('button:text-is("원래대로")');
   if (shots) await page.screenshot({ path: `${shots}/${viewport.name}-sampler.png`, fullPage: viewport.name === 'desktop' });
   // 루퍼: 재생, 녹음(카운트 후), 정지
   await page.click('.tab[data-tab="looper"]');
@@ -163,6 +185,10 @@ for (const [name, r] of Object.entries(results)) {
   if (r.recorded?.join() !== '60,67' || r.afterUndo !== 0) bad.push(`루퍼 녹음 ${r.recorded} / ${r.afterUndo}`);
   if (r.tuning.a !== 442 || r.tuning.t !== 'werckmeister3') bad.push('튜닝');
   if (!r.morphName.includes('×')) bad.push('섞기');
+  if (r.phrase.kind !== 'note' || r.phrase.voices < 1) bad.push('시험 연주');
+  if (r.bypassOn.heard !== 0 || !(r.bypassOn.saved > 0) || !(r.bypassOff > 0)) bad.push(`이펙트 A/B ${JSON.stringify([r.bypassOn, r.bypassOff])}`);
+  if (r.tail.type !== 'church' || !r.tail.text.includes('꼬리 길이')) bad.push('잔향 꼬리 재기');
+  if (!r.fxSample.longer || !r.fxSample.stereo) bad.push('샘플에 이펙트 굽기');
   if (r.drawn.wave !== 'custom') bad.push('배음 그리기');
   if (!r.reversed.endsWith('거꾸로') || r.restored.endsWith('거꾸로')) bad.push('샘플 가공');
   if (r.matchKind !== '한 음' || r.made.wave !== 'custom' || r.made.score < 60) bad.push(`닮은 음색 ${JSON.stringify(r.made)}`);

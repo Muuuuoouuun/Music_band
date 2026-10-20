@@ -1,7 +1,7 @@
 // 음색 공방: 화면·소리·저장을 잇는 곳. 음색(patch)·튜닝·샘플은 여기 한 곳에 있고,
 // 화면들은 app.on('patch' | 'tuning' | 'sample' ...) 으로 바뀐 것을 듣는다.
 import { Studio, Instrument } from './engine.js';
-import { normalizePatch, setPath } from './patch.js';
+import { normalizePatch, setPath, dryPatch } from './patch.js';
 import { FACTORY } from './presets.js';
 import { makeTuner, normalizeTuning, noteName, TEMPERAMENTS, NOTE_NAMES } from './tuning.js';
 import { bakeSample } from './sample.js';
@@ -37,6 +37,57 @@ class App {
     this.live = null;
     this.keyTarget = null;
     this.tab = 'synth';
+    this.bypass = false;
+    this.phrase = null;
+  }
+
+  /** 악기에 실제로 거는 음색 (이펙트 끄고 비교 중이면 이펙트 뺀 것) */
+  heard(patch = this.patch) {
+    return this.bypass ? dryPatch(patch) : patch;
+  }
+
+  /** A/B: 저장된 음색은 그대로 두고 소리에서만 이펙트를 잠깐 뺀다 */
+  setBypass(on) {
+    this.bypass = Boolean(on);
+    this.live?.setPatch(this.heard());
+    this.emit('bypass', this.bypass);
+  }
+
+  /**
+   * 시험 연주: 건반 없이 지금 음색을 들어 본다. kind: note | chord | arp | stab(끊어 쳐서 꼬리 듣기)
+   * 베이스·모노 음색은 낮은 음·한 음씩으로.
+   */
+  async playPhrase(kind) {
+    await this.ensureAudio();
+    this.stopPhrase();
+    const inst = this.live;
+    const ctx = this.studio.ctx;
+    const low = this.patch.category === 'bass';
+    const base = low ? 36 : 60;
+    const chord = this.patch.mono ? [base] : low ? [36, 43] : [60, 64, 67, 71];
+    const beat = 60 / this.studio.bpm;
+    const t0 = ctx.currentTime + 0.05;
+    const events = [];
+    const note = (m, at, dur, v = 0.78) => events.push([m, t0 + at, t0 + at + dur, v]);
+    if (kind === 'note') note(base, 0, 1.4);
+    else if (kind === 'chord') chord.forEach((m) => note(m, 0, 2));
+    else if (kind === 'arp') [0, 4, 7, 12, 16, 12, 7, 4].forEach((st, i) => note(base + st, i * beat * 0.5, beat * 0.45, 0.6 + 0.3 * (i % 4 === 0)));
+    else [0, 1.6].forEach((at) => chord.forEach((m) => note(m, at, 0.12, 0.85)));
+    for (const [m, on, off, v] of events) {
+      inst.noteOn(m, v, on);
+      inst.noteOff(m, off);
+    }
+    const end = Math.max(...events.map((e) => e[2])) - ctx.currentTime;
+    const token = (this.phrase = { kind, timer: setTimeout(() => { if (this.phrase === token) { this.phrase = null; this.emit('phrase', null); } }, end * 1000 + 300) });
+    this.emit('phrase', kind);
+  }
+
+  stopPhrase() {
+    if (!this.phrase) return;
+    clearTimeout(this.phrase.timer);
+    this.phrase = null;
+    this.live?.allOff(this.studio.ctx.currentTime, true);
+    this.emit('phrase', null);
   }
 
   on(type, fn) {
@@ -65,7 +116,7 @@ class App {
     const ctx = await this.studio.start();
     if (!this.live) {
       this.engineSample = this.makeEngineSample();
-      this.live = new Instrument(this.studio.env(), this.patch, this.engineSample);
+      this.live = new Instrument(this.studio.env(), this.heard(), this.engineSample);
       this.emit('audio');
     }
     this.renderHeader();
@@ -82,7 +133,7 @@ class App {
       this.committed = patch;
       store.save('patch', patch);
     }
-    this.live?.setPatch(patch);
+    this.live?.setPatch(this.heard(patch));
     this.emit('patch', { phase, keepMacros });
     this.renderHeader();
   }
@@ -97,7 +148,7 @@ class App {
     this.committed = prev;
     this.patch = prev;
     store.save('patch', prev);
-    this.live?.setPatch(prev);
+    this.live?.setPatch(this.heard(prev));
     this.emit('patch', { phase: 'change' });
     this.renderHeader();
   }
@@ -205,6 +256,7 @@ class App {
 
   panic() {
     const now = this.studio.ctx?.currentTime ?? 0;
+    this.stopPhrase();
     this.keyboard?.releaseAll();
     if (this.keyboard?.hold) this.keyboard.setHold(false);
     this.live?.allOff(now, true);

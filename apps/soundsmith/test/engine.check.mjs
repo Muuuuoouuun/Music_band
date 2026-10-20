@@ -69,7 +69,35 @@ const result = await page.evaluate(async () => {
     const res = await matchSound(ref, FACTORY.filter((f) => f.patch.name !== name), { name: 'x' });
     matches.push({ name, kind: ref.kind, score: res.score });
   }
-  return { out, a432: p432?.hz, justE: pJust?.hz, sampleLateHz: late?.hz, latePeak, narrow, wide, customHz: pCustom?.hz, heavy, matches };
+  // 잔향·딜레이 시험: 짧은 소리를 넣어 젖은 소리를 잰다
+  const { renderTail, renderThroughFx } = await import('/src/engine.js');
+  const { tailStats } = await import('/src/analyze.js');
+  const tail = async (fx) => {
+    const r = await renderTail(normalizePatch({ fx }));
+    const ch = (b) => [b.getChannelData(0), b.getChannelData(1)];
+    const st = tailStats(ch(r.full), ch(r.dry), 44100, { start: r.start });
+    return { rt60: st.rt60, onset: st.onset, wetDb: st.wetDb, width: st.width, echoes: st.echoes.slice(0, 4).map((e) => ({ t: e.t, side: e.left - e.right })), bad: [...r.full.getChannelData(0)].filter((v) => !Number.isFinite(v)).length };
+  };
+  const fx = {
+    quiet: await tail({ reverb: 0.2, size: 3 }),
+    loud: await tail({ reverb: 0.8, size: 3 }),
+    short: await tail({ reverb: 0.5, size: 1 }),
+    long: await tail({ reverb: 0.5, size: 6 }),
+    pre: await tail({ reverb: 0.5, size: 3, predelay: 0.12 }),
+    pingpong: await tail({ reverb: 0, delay: 0.6, feedback: 0.5, delayBeats: 0.5, delayMode: 'pingpong' }),
+    mono: await tail({ reverb: 0, delay: 0.6, feedback: 0.5, delayBeats: 0.5 }),
+    tape: await tail({ reverb: 0, delay: 0.6, feedback: 0.85, delayBeats: 0.5, delayMode: 'tape' }),
+  };
+  const { REVERB_TYPES } = await import('/src/patch.js');
+  for (const t of REVERB_TYPES) fx[t.id] = await tail({ reverb: 0.5, size: 2.5, reverbType: t.id });
+  // 녹음한 소리에 이펙트 굽기: 데모 첼로 + 교회 잔향 → 꼬리가 붙어 길어진다
+  const demo = demoSample(44100, 1.5);
+  const wetBuf = await renderThroughFx(normalizePatch({ fx: { reverb: 0.7, size: 3, reverbType: 'church' } }), [demo], 44100);
+  const wl = wetBuf.getChannelData(0);
+  let tailE = 0;
+  for (let i = demo.length + 4410; i < wl.length; i++) tailE += wl[i] * wl[i];
+  const throughFx = { seconds: wetBuf.length / 44100, tailE, bad: [...wl].filter((v) => !Number.isFinite(v)).length };
+  return { out, a432: p432?.hz, justE: pJust?.hz, sampleLateHz: late?.hz, latePeak, narrow, wide, customHz: pCustom?.hz, heavy, matches, fx, throughFx };
 });
 console.table(result.out);
 // C 순정률 + A4=440 고정이면 C4=264, E4=330 Hz (C 와 5/4)
@@ -85,4 +113,19 @@ if (result.narrow.side > 0.002 || result.wide.side < 0.2) { console.error('스�
 if (Math.abs(result.customHz - 261.63) > 1.5) { console.error('직접 그린 파형 음높이가 C4 아님'); process.exitCode = 1; }
 if (result.heavy.bad) { console.error('이펙트를 모두 올리면 숫자가 깨짐'); process.exitCode = 1; }
 for (const m of result.matches) if (m.kind !== 'tone' || m.score < 80) { console.error('닮은 음색이 덜 닮음', m); process.exitCode = 1; }
+const f = result.fx;
+console.table(Object.fromEntries(Object.entries(f).map(([k, v]) => [k, { rt60: v.rt60?.toFixed(2), onsetMs: v.onset != null ? Math.round(v.onset * 1000) : null, wetDb: v.wetDb?.toFixed(1), width: v.width.toFixed(2), echoes: v.echoes.map((e) => `${e.t.toFixed(2)}s/${e.side.toFixed(0)}dB`).join(' ') }])));
+console.log('이펙트 굽기', result.throughFx);
+const fail = (msg) => { console.error(msg); process.exitCode = 1; };
+if (f.loud.wetDb - f.quiet.wetDb < 10) fail('잔향 양을 올려도 젖은 소리가 커지지 않음');
+if (f.long.rt60 / f.short.rt60 < 4) fail('잔향 길이가 꼬리 길이(RT60)를 바꾸지 않음');
+if (Math.abs(f.pre.onset - f.quiet.onset - 0.1) > 0.015) fail('프리딜레이만큼 늦게 시작하지 않음');
+if (!f.pingpong.echoes.slice(0, 3).every((e, i) => (i % 2 ? e.side < -10 : e.side > 10))) fail('핑퐁이 좌우를 번갈아 가지 않음');
+if (!f.mono.echoes.slice(0, 3).every((e) => Math.abs(e.side) < 3)) fail('가운데 딜레이가 한쪽으로 치우침');
+if (Math.abs(f.mono.echoes[0].t - 60 / 72 / 2) > 0.012) fail('딜레이 간격이 BPM 72 의 8분음표가 아님');
+if (f.tape.wetDb > 0 || f.tape.bad) fail('테이프 딜레이 되먹임이 커짐');
+for (const t of ['room', 'hall', 'church', 'plate', 'spring', 'ambient']) if (f[t].bad || !(f[t].rt60 > 1.4 && f[t].rt60 < 2.6)) fail(`잔향 ${t} 꼬리가 이상함`);
+if (!(f.plate.onset < f.hall.onset && f.hall.onset < f.church.onset)) fail('잔향 종류의 시작 순서가 다름');
+const tf = result.throughFx;
+if (tf.bad || tf.seconds < 1.5 + 3 || tf.tailE < 1e-4) fail('녹음한 소리에 이펙트 굽기가 꼬리를 만들지 않음');
 await browser.close();

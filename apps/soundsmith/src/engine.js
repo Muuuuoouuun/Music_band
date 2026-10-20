@@ -19,29 +19,81 @@ import { makeRng } from './rng.js';
 const MAX_VOICES = 16;
 const clampHz = (f) => Math.min(20000, Math.max(20, f));
 
-// 홀 잔향: 시간이 갈수록 어두워지는 꼬리 + 좌우가 다른 초기 반사 (AirChoir audio.js 와 같은 방식)
-export function impulseData(sampleRate, seconds = 2.6, seed = 11) {
+// 잔향 종류별 성격. pre: 첫소리까지, attack: 차오르는 시간, bright→dark: 시간이 갈수록 어두워지는 고역 차단,
+// dampTime: 어두워지는 속도(RT60 대비), early: 첫 반사(개수·구간·세기·줄어듦), spring: 용수철 반복, mod: 출렁임.
+// 홀은 AirChoir audio.js 와 같은 식 (고역 감쇠 0.5 에서 예전 잔향과 똑같다).
+const REVERB_SHAPES = {
+  room: { pre: 0.004, attack: 0.006, bright: 7000, dark: 1500, dampTime: 0.3, early: { count: 14, from: 0.002, span: 0.033, level: 0.7, decay: 30 } },
+  hall: { pre: 0.018, attack: 0.025, bright: 9000, dark: 1200, dampTime: 0.25, early: { count: 7, from: 0.008, span: 0.072, level: 0.5, decay: 14 } },
+  church: { pre: 0.03, attack: 0.08, bright: 6000, dark: 700, dampTime: 0.2, early: { count: 5, from: 0.02, span: 0.1, level: 0.35, decay: 8 } },
+  plate: { pre: 0.001, attack: 0.002, bright: 12000, dark: 3500, dampTime: 0.5, early: null },
+  spring: { pre: 0.002, attack: 0.003, bright: 5000, dark: 2000, dampTime: 0.6, early: null, noise: 0.45, spring: { period: 0.033, level: 1.6 } },
+  ambient: { pre: 0.02, attack: 0.18, bright: 8000, dark: 1500, dampTime: 0.35, early: null, mod: 0.25 },
+};
+
+/**
+ * 잔향 임펄스: 시간이 갈수록 어두워지는 잡음 꼬리 + 종류별 첫 반사·용수철·출렁임. 좌우는 다른 잡음.
+ * seconds: 꼬리 길이 (RT60 은 그 0.8배), damp: 고역 감쇠 0(밝게 오래)..1(빨리 어두워짐).
+ * 두 채널 합친 에너지를 1 로 맞춰 종류·길이를 바꿔도 크기가 비슷하다.
+ */
+export function impulseData(sampleRate, seconds = 2.6, { type = 'hall', damp = 0.5, seed = 11 } = {}) {
+  const T = REVERB_SHAPES[type] ?? REVERB_SHAPES.hall;
   let s = seed >>> 0;
   const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1;
   const len = Math.round(sampleRate * seconds);
-  const pre = Math.round(sampleRate * 0.018);
+  const pre = Math.round(sampleRate * T.pre);
   const rt60 = seconds * 0.8;
+  const scale = 2 ** ((0.5 - damp) * 1.6);
+  const top = sampleRate * 0.45;
+  const bright = Math.min(top, T.bright * scale);
+  const dark = Math.min(top, T.dark * scale);
   const channels = [];
   for (let c = 0; c < 2; c++) {
     const d = new Float32Array(len);
     let lp = 0;
     for (let i = pre; i < len; i++) {
       const t = (i - pre) / sampleRate;
-      const fc = 1200 + 7800 * Math.exp(-t / (rt60 * 0.25));
+      const fc = dark + (bright - dark) * Math.exp(-t / (rt60 * T.dampTime));
       const a = 1 - Math.exp((-2 * Math.PI * fc) / sampleRate);
       lp += (rnd() - lp) * a;
-      const onset = Math.min(1, t / 0.025);
-      d[i] = lp * Math.exp((-6.9 * t) / rt60) * onset * onset * (1.6 + 2.4 * (1 - a));
+      const onset = Math.min(1, t / T.attack);
+      const swirl = T.mod ? 1 + T.mod * Math.sin(2 * Math.PI * (0.35 + 0.1 * c) * t) : 1;
+      d[i] = lp * Math.exp((-6.9 * t) / rt60) * onset * onset * (1.6 + 2.4 * (1 - a)) * swirl * (T.noise ?? 1);
     }
-    for (let k = 0; k < 7; k++) {
-      const tt = 0.008 + 0.072 * ((rnd() + 1) / 2);
-      const i = pre + Math.round(tt * sampleRate);
-      if (i < len) d[i] += 0.5 * rnd() * Math.exp(-tt * 14);
+    if (T.early) {
+      const e = T.early;
+      for (let k = 0; k < e.count; k++) {
+        const tt = e.from + e.span * ((rnd() + 1) / 2);
+        const i = pre + Math.round(tt * sampleRate);
+        if (i < len) d[i] += e.level * rnd() * Math.exp(-tt * e.decay);
+      }
+    }
+    if (T.spring) {
+      // 용수철: 높은 소리부터 낮은 소리로 미끄러지는 짧은 처프가 일정한 간격으로 되풀이 (좌우 간격 조금 다르게)
+      const period = T.spring.period * (1 + 0.04 * c);
+      const dur = Math.round(0.014 * sampleRate);
+      for (let n = 1; n * period < seconds; n++) {
+        const at = pre + Math.round(n * period * sampleRate);
+        const amp = T.spring.level * Math.exp((-6.9 * n * period) / rt60);
+        let ph = 0;
+        for (let k = 0; k < dur && at + k < len; k++) {
+          const u = k / dur;
+          ph += (3200 * (300 / 3200) ** u) / sampleRate;
+          d[at + k] += amp * Math.sin(2 * Math.PI * ph) * Math.sin(Math.PI * u) ** 2;
+        }
+      }
+      // 용수철은 아주 낮은 소리와 아주 높은 소리를 못 낸다
+      let hp = 0;
+      let prev = 0;
+      let lo = 0;
+      const ah = Math.exp((-2 * Math.PI * 150) / sampleRate);
+      const al = 1 - Math.exp((-2 * Math.PI * 4500) / sampleRate);
+      for (let i = 0; i < len; i++) {
+        hp = ah * (hp + d[i] - prev);
+        prev = d[i];
+        lo += (hp - lo) * al;
+        d[i] = lo;
+      }
     }
     channels.push(d);
   }
@@ -52,10 +104,20 @@ export function impulseData(sampleRate, seconds = 2.6, seed = 11) {
   return channels;
 }
 
-function makeIR(ctx, seconds) {
-  const data = impulseData(ctx.sampleRate, seconds);
-  const buf = ctx.createBuffer(2, data[0].length, ctx.sampleRate);
-  data.forEach((d, c) => buf.copyToChannel(d, c));
+// 같은 잔향은 다시 만들지 않는다 (AudioBuffer 는 컨텍스트끼리 나눠 쓸 수 있다). 미리 연주·비교 렌더가 빨라진다
+const irCache = new Map();
+export const irKey = (seconds, type = 'hall', damp = 0.5) => `${type}|${Math.round(seconds * 4) / 4}|${Math.round(damp * 10) / 10}`;
+function makeIR(ctx, seconds, type = 'hall', damp = 0.5) {
+  const key = `${ctx.sampleRate}|${irKey(seconds, type, damp)}`;
+  let buf = irCache.get(key);
+  if (!buf) {
+    const [, sec, dp] = irKey(seconds, type, damp).split('|');
+    const data = impulseData(ctx.sampleRate, Number(sec), { type, damp: Number(dp) });
+    buf = new AudioBuffer({ length: data[0].length, numberOfChannels: 2, sampleRate: ctx.sampleRate });
+    data.forEach((d, c) => buf.copyToChannel(d, c));
+    if (irCache.size > 24) irCache.delete(irCache.keys().next().value);
+    irCache.set(key, buf);
+  }
   return buf;
 }
 
@@ -146,6 +208,17 @@ function driveCurve(amount) {
   return curve;
 }
 
+/** 테이프 포화: 작은 소리는 그대로(기울기 1), 큰 소리만 둥글게 눌러 되먹임 고리가 커지지 않는다. */
+function tapeCurve() {
+  const n = 1024;
+  const curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    curve[i] = Math.tanh(1.5 * x) / 1.5;
+  }
+  return curve;
+}
+
 /** 로파이: 계단 모양 곡선으로 소리 높낮이 단계를 줄인다 (256단계 → 8단계). */
 function lofiCurve(amount) {
   const half = Math.max(4, Math.round(2 ** (8 - amount * 5))) / 2;
@@ -188,7 +261,7 @@ function setWave(ctx, osc, id, custom) {
 }
 
 export class Instrument {
-  /** env: { ctx, out, tuner, bpm(), irFor(seconds) } */
+  /** env: { ctx, out, tuner, bpm(), irFor(seconds, type, damp) } */
   constructor(env, patch, sample = null) {
     this.env = env;
     this.sample = sample;
@@ -265,13 +338,37 @@ export class Instrument {
     // 그대로·딜레이·잔향이 모이는 곳
     this.post = gain(1);
     this.fxBus.connect(this.post);
-    // 딜레이: 되먹임 고리 안에 저역통과 (반복될수록 어두워짐)
+    // 딜레이: 되먹임 고리 안에 저역통과 (반복될수록 어두워짐). 방식은 이음새 볼륨으로 바꾼다
+    //   가운데: A → 밝기 → (테이프 포화) → 되먹임 → A          (가운데로 나감)
+    //   핑퐁:   A → 왼쪽, A → B → 오른쪽, B → 되먹임 → A       (좌우 번갈아)
+    //   테이프: 가운데 + 지연 시간을 천천히 흔들고 반복마다 살짝 찌그러뜨림
     this.delaySend = gain(0);
-    this.echo = ctx.createDelay(4);
-    this.echoTone = biquad('lowpass', 4200);
-    this.feedback = gain(0.35);
-    this.fxBus.connect(this.delaySend).connect(this.echo).connect(this.echoTone).connect(this.feedback).connect(this.echo);
-    this.echoTone.connect(this.post);
+    this.dA = ctx.createDelay(4);
+    this.dB = ctx.createDelay(4);
+    this.toneA = biquad('lowpass', 4200);
+    this.toneB = biquad('lowpass', 4200);
+    this.tapeSat = ctx.createWaveShaper();
+    this.fbMono = gain(0.35);
+    this.fbPP = gain(0);
+    this.ppCross = gain(0);
+    this.outC = gain(1);
+    this.outL = gain(0);
+    this.outR = gain(0);
+    const panL = ctx.createStereoPanner();
+    panL.pan.value = -0.9;
+    const panR = ctx.createStereoPanner();
+    panR.pan.value = 0.9;
+    this.fxBus.connect(this.delaySend).connect(this.dA).connect(this.toneA).connect(this.tapeSat);
+    this.tapeSat.connect(this.outC).connect(this.post);
+    this.tapeSat.connect(this.fbMono).connect(this.dA);
+    this.tapeSat.connect(this.outL).connect(panL).connect(this.post);
+    this.tapeSat.connect(this.ppCross).connect(this.dB).connect(this.toneB);
+    this.toneB.connect(this.outR).connect(panR).connect(this.post);
+    this.toneB.connect(this.fbPP).connect(this.dA);
+    this.wowDepth = gain(0);
+    lfo(0.55).connect(this.wowDepth);
+    this.wowDepth.connect(this.dA.delayTime);
+    this.wowDepth.connect(this.dB.delayTime);
     // 잔향: 프리딜레이 → 홀 → 저역 정리(150Hz 아래 깎기) → 밝기
     this.reverbSend = gain(0);
     this.shimmerIn = gain(1);
@@ -341,7 +438,8 @@ export class Instrument {
     const now = this.ctx.currentTime;
     const p = patch;
     const fx = p.fx;
-    const smooth = (param, v) => param.setTargetAtTime(v, now, 0.02);
+    // 처음 한 번은 바로 그 값으로 (미리 연주·재기에서 첫 0.1초가 덜 젖은 소리가 되지 않게), 그 뒤로는 부드럽게
+    const smooth = prev ? (param, v) => param.setTargetAtTime(v, now, 0.02) : (param, v) => param.setValueAtTime(v, now);
     if (!prev || prev.fx.drive !== fx.drive) this.shaper.curve = fx.drive > 0.001 ? driveCurve(fx.drive) : null;
     smooth(this.postDrive.gain, 1 / (1 + fx.drive * 1.5));
     if (!prev || prev.fx.lofi !== fx.lofi) this.lofiShaper.curve = fx.lofi > 0.001 ? lofiCurve(fx.lofi) : null;
@@ -355,14 +453,28 @@ export class Instrument {
     smooth(this.chorusWet.gain, fx.chorus * 0.8);
     smooth(this.chorusDry.gain, 1 - fx.chorus * 0.3);
     smooth(this.delaySend.gain, fx.delay * 0.6);
-    smooth(this.feedback.gain, fx.feedback);
+    const mode = fx.delayMode;
+    const pp = mode === 'pingpong';
+    const tape = mode === 'tape';
+    smooth(this.outC.gain, pp ? 0 : 1);
+    smooth(this.fbMono.gain, pp ? 0 : fx.feedback);
+    smooth(this.outL.gain, pp ? 1 : 0);
+    smooth(this.outR.gain, pp ? 1 : 0);
+    smooth(this.ppCross.gain, pp ? fx.feedback : 0);
+    smooth(this.fbPP.gain, pp ? fx.feedback : 0);
+    smooth(this.wowDepth.gain, tape ? 0.0025 : 0);
+    if (!prev || prev.fx.delayMode !== mode) this.tapeSat.curve = tape ? tapeCurve() : null;
+    const tone = Math.min(this.ctx.sampleRate * 0.45, fx.delayTone * (tape ? 0.6 : 1));
+    smooth(this.toneA.frequency, tone);
+    smooth(this.toneB.frequency, tone);
     this.syncTempo();
     smooth(this.reverbSend.gain, fx.reverb * 0.9);
     smooth(this.predelay.delayTime, fx.predelay);
     smooth(this.revTone.frequency, Math.min(this.ctx.sampleRate * 0.45, 1500 * 2 ** (fx.tone * 3.4)));
-    if (this.irSize == null || Math.abs(this.irSize - fx.size) > 0.12) {
-      this.irSize = fx.size;
-      this.reverb.buffer = this.env.irFor(fx.size);
+    const key = irKey(fx.size, fx.reverbType, fx.damp);
+    if (this.irKeyNow !== key) {
+      this.irKeyNow = key;
+      this.reverb.buffer = this.env.irFor(fx.size, fx.reverbType, fx.damp);
     }
     smooth(this.eqLow.gain, p.eq.low);
     smooth(this.eqMid.gain, p.eq.mid);
@@ -390,7 +502,9 @@ export class Instrument {
 
   syncTempo() {
     const beat = 60 / this.env.bpm();
-    this.echo.delayTime.setTargetAtTime(Math.min(3.9, this.patch.fx.delayBeats * beat), this.ctx.currentTime, 0.05);
+    const t = Math.min(3.9, this.patch.fx.delayBeats * beat);
+    this.dA.delayTime.setTargetAtTime(t, this.ctx.currentTime, 0.05);
+    this.dB.delayTime.setTargetAtTime(t, this.ctx.currentTime, 0.05);
   }
 
   setSustain(on, when = this.ctx.currentTime) {
@@ -771,8 +885,7 @@ export class Studio {
     this.ctx = null;
     this.tuner = makeTuner({});
     this.bpm = 72;
-    this.irs = new Map();
-    this.masterLevel = 0.85;
+        this.masterLevel = 0.85;
   }
 
   get running() {
@@ -807,10 +920,8 @@ export class Studio {
     if (this.master) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02);
   }
 
-  irFor(seconds) {
-    const key = Math.round(seconds * 4) / 4;
-    if (!this.irs.has(key)) this.irs.set(key, makeIR(this.ctx, key));
-    return this.irs.get(key);
+  irFor(seconds, type, damp) {
+    return makeIR(this.ctx, seconds, type, damp);
   }
 
   /** 악기가 쓰는 환경. 튜닝·빠르기는 읽을 때마다 지금 값이라, 튜닝을 바꾸면 다음 음부터 바로 따른다. */
@@ -821,7 +932,7 @@ export class Studio {
       out: this.bus,
       get tuner() { return studio.tuner; },
       bpm: () => studio.bpm,
-      irFor: (s) => studio.irFor(s),
+      irFor: (s, type, damp) => studio.irFor(s, type, damp),
     };
   }
 
@@ -841,27 +952,84 @@ export class Studio {
   }
 }
 
+// 미리 연주(OfflineAudioContext)는 한 번에 하나씩만. 크롬에서 잔향(컨볼버)이 있는 렌더 둘이 동시에 돌면
+// 꼬리가 잘리거나 딜레이가 비는 등 결과가 흔들린다 (이펙트 꼬리 재기 검사에서 확인).
+let renderQueue = Promise.resolve();
+export function rendered(ctx) {
+  const run = renderQueue.then(() => ctx.startRendering());
+  renderQueue = run.catch(() => {});
+  return run;
+}
+
+function offlineEnv(ctx, tuning = {}, bpm = 72) {
+  return {
+    ctx,
+    out: ctx.destination,
+    tuner: makeTuner(tuning),
+    bpm: () => bpm,
+    irFor: (s, type, damp) => makeIR(ctx, s, type, damp),
+  };
+}
+
 /**
  * 지금 음색으로 음(들)을 미리 연주해 AudioBuffer 로 (샘플러의 '음색 굽기', 음원 따라 만들기의 비교, 테스트).
  * notes 를 주면 화음으로 친다. dry 면 딜레이·잔향·쉬머를 뺀다.
  */
 export async function renderNote(patch, { midi = 57, notes = null, velocity = 0.8, seconds = 3, hold = 2.2, tuning = {}, sample = null, sampleRate = 44100, dry = true } = {}) {
   const ctx = new OfflineAudioContext(2, Math.round(sampleRate * seconds), sampleRate);
-  const irs = new Map();
-  const env = {
-    ctx,
-    out: ctx.destination,
-    tuner: makeTuner(tuning),
-    bpm: () => 72,
-    irFor: (s) => {
-      if (!irs.has(s)) irs.set(s, makeIR(ctx, s));
-      return irs.get(s);
-    },
-  };
+  const env = offlineEnv(ctx, tuning);
   const p = dry ? { ...patch, fx: { ...patch.fx, delay: 0, reverb: 0, shimmer: 0 } } : patch;
   const inst = new Instrument(env, p, sample);
   const list = notes ?? [midi];
   for (const m of list) inst.noteOn(m, velocity, 0.01);
   for (const m of list) inst.noteOff(m, hold);
-  return ctx.startRendering();
+  return rendered(ctx);
+}
+
+/** 이펙트 꼬리가 사라지는 데 걸리는 대략의 시간 (초): 잔향 길이, 딜레이 반복이 0.1% 로 줄 때까지. */
+export function effectTail(fx, bpm = 72) {
+  const rev = fx.reverb > 0.001 ? fx.predelay + fx.size * 1.05 : 0;
+  const t = fx.delayBeats * (60 / bpm);
+  const echoes = fx.delay > 0.001 ? t * Math.min(40, Math.log(0.001) / Math.log(Math.min(0.9, Math.max(0.05, fx.feedback)))) : 0;
+  return Math.min(10, Math.max(rev, echoes) + 0.15);
+}
+
+/** 이펙트 줄에 바깥 소리를 넣는 입구 (음 하나의 크기쯤으로 낮춰 넣어 드라이브·컴프가 건반 연주 때와 같이 반응) */
+function feed(ctx, inst, channels, sampleRate, when) {
+  const b = new AudioBuffer({ length: channels[0].length, numberOfChannels: channels.length, sampleRate });
+  channels.forEach((c, i) => b.copyToChannel(c, i));
+  const src = ctx.createBufferSource();
+  src.buffer = b;
+  const g = ctx.createGain();
+  g.gain.value = 0.35;
+  src.connect(g).connect(inst.input);
+  src.start(when);
+}
+
+/**
+ * 이펙트 시험: 5ms 짧은 소리 하나를 지금 음색의 이펙트 줄에 넣어 꼬리를 받는다.
+ * 딜레이·잔향·쉬머만 뺀 같은 줄로도 받아 두면 full − dry 가 '젖은 소리'(딜레이+잔향)만 된다.
+ */
+export async function renderTail(patch, { sampleRate = 44100, bpm = 72 } = {}) {
+  const seconds = Math.min(10.5, 0.2 + effectTail(patch.fx, bpm));
+  let st = 5;
+  const n = Math.round(sampleRate * 0.005);
+  const burst = Float32Array.from({ length: n }, (_, i) => (((st = (st * 1664525 + 1013904223) >>> 0) / 2147483648) - 1) * Math.sin((Math.PI * i) / n) ** 2);
+  const render = (p) => {
+    const ctx = new OfflineAudioContext(2, Math.round(sampleRate * seconds), sampleRate);
+    feed(ctx, new Instrument(offlineEnv(ctx, {}, bpm), p), [burst], sampleRate, 0.01);
+    return rendered(ctx);
+  };
+  const noSpace = { ...patch, fx: { ...patch.fx, delay: 0, reverb: 0, shimmer: 0 } };
+  const full = await render(patch);
+  const dry = await render(noSpace);
+  return { full, dry, seconds, start: 0.01 };
+}
+
+/** 녹음한 소리(샘플)를 지금 음색의 이펙트 줄(드라이브~잔향~EQ~폭)에 통과시켜 꼬리까지 받는다. 쉬머는 건반 음에만 생긴다. */
+export async function renderThroughFx(patch, channels, sampleRate, { bpm = 72 } = {}) {
+  const len = channels[0].length + Math.round(effectTail(patch.fx, bpm) * sampleRate);
+  const ctx = new OfflineAudioContext(2, len, sampleRate);
+  feed(ctx, new Instrument(offlineEnv(ctx, {}, bpm), patch), channels, sampleRate, 0);
+  return rendered(ctx);
 }

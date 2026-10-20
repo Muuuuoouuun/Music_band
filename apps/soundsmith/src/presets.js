@@ -19,7 +19,7 @@ const RAW = [
     filter: { cutoff: 3200, q: 1.2, env: 0.5 },
     ampEnv: { a: 2.2, d: 2, s: 0.85, r: 4 }, filterEnv: { a: 3, d: 3, s: 0.7, r: 3 },
     lfo: { target: 'filter', rate: 0.09, depth: 0.4 },
-    fx: { chorus: 0.6, delay: 0.2, reverb: 0.7, size: 7, width: 1.4, tone: 0.7 },
+    fx: { chorus: 0.6, delay: 0.2, reverb: 0.7, size: 7, width: 1.4, tone: 0.7, reverbType: 'ambient' },
   },
   {
     name: '쉬머 패드', volume: 0.5, category: 'pad', drift: 0.2,
@@ -27,7 +27,7 @@ const RAW = [
     filter: { cutoff: 2200, q: 0.5, env: 0.6, keytrack: 0.4 },
     ampEnv: { a: 1.8, d: 2, s: 0.9, r: 4 }, filterEnv: { a: 2, d: 3, s: 0.7, r: 3 },
     lfo: { target: 'filter', rate: 0.12, depth: 0.2 },
-    fx: { chorus: 0.4, shimmer: 0.6, reverb: 0.7, size: 7, predelay: 0.06, tone: 0.75, width: 1.6 },
+    fx: { chorus: 0.4, shimmer: 0.6, reverb: 0.7, size: 7, predelay: 0.06, tone: 0.75, width: 1.6, reverbType: 'ambient' },
   },
   {
     name: '아날로그 웜 패드', volume: 0.55, category: 'pad', drift: 0.5,
@@ -51,7 +51,7 @@ const RAW = [
     filter: { cutoff: 4200, q: 0.8, env: 0.4 },
     ampEnv: { a: 1.2, d: 2.5, s: 0.8, r: 3.5 }, filterEnv: { a: 1.5, d: 2, s: 0.7, r: 2 },
     lfo: { target: 'amp', rate: 0.25, depth: 0.15 },
-    fx: { chorus: 0.35, delay: 0.18, reverb: 0.6, size: 6, width: 1.5, shimmer: 0.2 },
+    fx: { chorus: 0.35, delay: 0.18, reverb: 0.6, size: 6, width: 1.5, shimmer: 0.2, reverbType: 'ambient' },
   },
   // ---- 건반 ----
   {
@@ -71,7 +71,7 @@ const RAW = [
     filter: { cutoff: 4500, keytrack: 0.3 },
     ampEnv: { a: 0.002, d: 3.5, s: 0.15, r: 0.45 },
     lfo: { target: 'amp', rate: 4.8, depth: 0.22 },
-    fx: { chorus: 0.15, phaser: 0.25, phaserRate: 0.5, reverb: 0.25, comp: 0.25 },
+    fx: { chorus: 0.15, phaser: 0.25, phaserRate: 0.5, reverb: 0.25, comp: 0.25, reverbType: 'plate' },
     vel: { filter: 1.6 },
   },
   {
@@ -81,7 +81,7 @@ const RAW = [
     filter: { cutoff: 3200, env: 0.8 },
     filterEnv: { a: 0.002, d: 0.5, s: 0.3, r: 0.3 }, ampEnv: { a: 0.002, d: 2.2, s: 0.25, r: 0.3 },
     lfo: { target: 'amp', rate: 5.5, depth: 0.3 },
-    fx: { drive: 0.25, reverb: 0.2 },
+    fx: { drive: 0.25, reverb: 0.2, reverbType: 'spring', size: 1.8 },
     vel: { filter: 1.4 },
   },
   {
@@ -90,7 +90,7 @@ const RAW = [
     filter: { cutoff: 7000, q: 0.3, keytrack: 0 },
     ampEnv: { a: 0.01, d: 0.1, s: 1, r: 0.12 },
     lfo: { target: 'amp', rate: 6.2, depth: 0.1 },
-    fx: { chorus: 0.45, reverb: 0.5, size: 3.5, width: 1.3 },
+    fx: { chorus: 0.45, reverb: 0.5, size: 4.5, width: 1.3, reverbType: 'church' },
     vel: { amp: 0.2, filter: 0 },
   },
   {
@@ -98,7 +98,7 @@ const RAW = [
     osc: [{ wave: 'organ', level: 0.7 }, { wave: 'sine', octave: 1, level: 0.3 }],
     filter: { cutoff: 8000, keytrack: 0 },
     ampEnv: { a: 0.005, d: 0.1, s: 1, r: 0.08 },
-    fx: { drive: 0.2, chorus: 0.6, phaser: 0.3, phaserRate: 5.5, reverb: 0.25, width: 1.4 },
+    fx: { drive: 0.2, chorus: 0.6, phaser: 0.3, phaserRate: 5.5, reverb: 0.25, width: 1.4, reverbType: 'room', size: 1.2 },
     vel: { amp: 0.15, filter: 0 },
   },
   {
@@ -115,7 +115,7 @@ const RAW = [
     filter: { cutoff: 2500 },
     ampEnv: { a: 0.003, d: 2.5, s: 0.2, r: 0.4 },
     lfo: { target: 'pitch', rate: 0.6, depth: 0.06 },
-    fx: { lofi: 0.45, chorus: 0.3, reverb: 0.3 },
+    fx: { lofi: 0.45, chorus: 0.3, reverb: 0.3, reverbType: 'spring', size: 1.6 },
     eq: { low: 2, high: -3 },
   },
   // ---- 현악 ----
@@ -140,7 +140,7 @@ const RAW = [
     pluck: { bright: 0.45, decay: 0.7, pick: 0.3, body: 0.8 },
     filter: { cutoff: 9000, keytrack: 0 },
     ampEnv: { a: 0.001, d: 1, s: 1, r: 0.15 },
-    fx: { reverb: 0.35, size: 2.8, width: 1.2 },
+    fx: { reverb: 0.35, size: 2.8, width: 1.2, reverbType: 'hall' },
   },
   // ---- 합창·관악 ----
   {
@@ -149,7 +149,7 @@ const RAW = [
     filter: { cutoff: 3200, q: 0.6 },
     ampEnv: { a: 0.6, d: 1, s: 0.9, r: 1.6 },
     lfo: { target: 'pitch', rate: 5.2, depth: 0.08, delay: 0.7 },
-    fx: { chorus: 0.45, reverb: 0.6, size: 4.5, width: 1.5, predelay: 0.03 },
+    fx: { chorus: 0.45, reverb: 0.6, size: 4.5, width: 1.5, predelay: 0.03, reverbType: 'church' },
   },
   {
     name: '우~ 허밍 합창', volume: 0.55, category: 'choir', drift: 0.15, noise: 0.03,
@@ -157,7 +157,7 @@ const RAW = [
     filter: { cutoff: 1100, q: 0.8 },
     ampEnv: { a: 0.8, d: 1, s: 0.9, r: 2 },
     lfo: { target: 'pitch', rate: 5, depth: 0.06, delay: 0.8 },
-    fx: { chorus: 0.5, reverb: 0.6, size: 4.5, width: 1.4 },
+    fx: { chorus: 0.5, reverb: 0.6, size: 4.5, width: 1.4, reverbType: 'church' },
   },
   {
     name: '브라스 스웰', volume: 1, category: 'choir',
@@ -216,7 +216,7 @@ const RAW = [
     fm: { amount: 0.25, ratio: 5, decay: 0.4, sustain: 0 },
     filter: { cutoff: 12000, keytrack: 0 },
     ampEnv: { a: 0.001, d: 1.6, s: 0, r: 1.2 },
-    fx: { delay: 0.15, reverb: 0.45, size: 3 },
+    fx: { delay: 0.15, reverb: 0.45, size: 3, reverbType: 'plate' },
   },
   {
     name: '비브라폰', volume: 0.6, category: 'bell', click: 0.15, clickTone: 0.4,
@@ -225,7 +225,7 @@ const RAW = [
     filter: { cutoff: 8000, keytrack: 0 },
     ampEnv: { a: 0.001, d: 3.5, s: 0, r: 1.5 },
     lfo: { target: 'amp', rate: 5.5, depth: 0.3 },
-    fx: { reverb: 0.35, size: 2.8, width: 1.2 },
+    fx: { reverb: 0.35, size: 2.8, width: 1.2, reverbType: 'room' },
   },
   {
     name: '마림바', volume: 0.85, category: 'bell', click: 0.25, clickTone: 0.3,
@@ -233,7 +233,7 @@ const RAW = [
     fm: { amount: 0.35, ratio: 4, decay: 0.12, sustain: 0 },
     filter: { cutoff: 6000, keytrack: 0 },
     ampEnv: { a: 0.001, d: 0.7, s: 0, r: 0.25 },
-    fx: { reverb: 0.25, size: 2.2 },
+    fx: { reverb: 0.25, size: 2.2, reverbType: 'room' },
   },
   // ---- 베이스 ----
   {
@@ -262,7 +262,7 @@ const RAW = [
     pluck: { bright: 0.35, decay: 2.2, pick: 0.2, body: 0.85 },
     filter: { cutoff: 5000, keytrack: 0 },
     ampEnv: { a: 0.001, d: 1, s: 1, r: 0.12 },
-    fx: { comp: 0.35, reverb: 0.05, width: 0.7 },
+    fx: { comp: 0.35, reverb: 0.05, width: 0.7, reverbType: 'room', size: 1 },
   },
   // ---- 리드 ----
   {
@@ -271,7 +271,7 @@ const RAW = [
     filter: { cutoff: 2400, q: 2, env: 1.2 },
     filterEnv: { a: 0.01, d: 0.6, s: 0.4, r: 0.3 }, ampEnv: { a: 0.02, d: 0.3, s: 0.85, r: 0.3 },
     lfo: { target: 'pitch', rate: 5.5, depth: 0.1, delay: 0.35 },
-    fx: { delay: 0.3, delayBeats: 0.75, feedback: 0.4, reverb: 0.3 },
+    fx: { delay: 0.3, delayBeats: 0.75, feedback: 0.4, reverb: 0.3, delayMode: 'pingpong' },
   },
   {
     name: '슈퍼소 리드', volume: 0.95, category: 'lead', mono: true, glide: 0.06, drift: 0.1,
@@ -279,7 +279,7 @@ const RAW = [
     filter: { cutoff: 5000, q: 0.8, env: 0.5 },
     filterEnv: { a: 0.01, d: 0.5, s: 0.6, r: 0.3 }, ampEnv: { a: 0.01, d: 0.3, s: 0.85, r: 0.3 },
     lfo: { target: 'pitch', rate: 5.5, depth: 0.08, delay: 0.4 },
-    fx: { delay: 0.3, reverb: 0.3, width: 1.5 },
+    fx: { delay: 0.3, reverb: 0.3, width: 1.5, delayMode: 'pingpong' },
   },
   {
     name: '휘슬 리드', volume: 0.7, category: 'lead', mono: true, glide: 0.1, noise: 0.05,
@@ -295,7 +295,7 @@ const RAW = [
     filter: { cutoff: 3000, q: 1.5, env: 0.8 },
     filterEnv: { a: 0.005, d: 0.4, s: 0.5, r: 0.2 }, ampEnv: { a: 0.005, d: 0.3, s: 0.9, r: 0.2 },
     lfo: { target: 'pitch', rate: 5.6, depth: 0.1, delay: 0.5 },
-    fx: { drive: 0.6, delay: 0.25, reverb: 0.25, comp: 0.3 },
+    fx: { drive: 0.6, delay: 0.25, reverb: 0.25, comp: 0.3, delayMode: 'tape', delayTone: 2800 },
     eq: { mid: 3, midFreq: 1400 },
   },
   // ---- 줄·플럭 ----
@@ -311,7 +311,7 @@ const RAW = [
     pluck: { bright: 0.8, decay: 3, pick: 0.18, body: 0.65 },
     filter: { cutoff: 12000, keytrack: 0 },
     ampEnv: { a: 0.001, d: 1, s: 1, r: 0.35 },
-    fx: { reverb: 0.2, size: 1.8 },
+    fx: { reverb: 0.2, size: 1.8, reverbType: 'room' },
   },
   {
     name: '하프', volume: 0.6, category: 'pluck', source: 'pluck',
@@ -325,7 +325,7 @@ const RAW = [
     pluck: { bright: 0.45, decay: 2.6, pick: 0.25, body: 0.8 },
     filter: { cutoff: 9000, keytrack: 0 },
     ampEnv: { a: 0.001, d: 1, s: 1, r: 0.3 },
-    fx: { reverb: 0.25, size: 2 },
+    fx: { reverb: 0.25, size: 2, reverbType: 'room' },
   },
   {
     name: '칼림바', volume: 0.7, category: 'pluck', click: 0.2, clickTone: 0.5,
@@ -340,7 +340,7 @@ const RAW = [
     osc: [{ wave: 'square', unison: 2, spread: 6, level: 0.95 }],
     filter: { slope: 24, cutoff: 700, q: 3, env: 3, keytrack: 0.5 },
     filterEnv: { a: 0.001, d: 0.18, s: 0, r: 0.15 }, ampEnv: { a: 0.001, d: 0.35, s: 0, r: 0.3 },
-    fx: { delay: 0.4, delayBeats: 0.75, feedback: 0.45, reverb: 0.3, width: 1.5 },
+    fx: { delay: 0.4, delayBeats: 0.75, feedback: 0.45, reverb: 0.3, width: 1.5, delayMode: 'pingpong' },
   },
   // ---- 텍스처 ----
   {
@@ -349,7 +349,7 @@ const RAW = [
     filter: { slope: 24, cutoff: 700, q: 2, env: 1 },
     filterEnv: { a: 4, d: 6, s: 0.5, r: 4 }, ampEnv: { a: 3, d: 3, s: 0.9, r: 6 },
     lfo: { target: 'filter', rate: 0.07, depth: 0.5 },
-    fx: { reverb: 0.8, size: 8, shimmer: 0.3, width: 1.8, predelay: 0.08, tone: 0.4 },
+    fx: { reverb: 0.8, size: 8, shimmer: 0.3, width: 1.8, predelay: 0.08, tone: 0.4, reverbType: 'ambient', damp: 0.75 },
   },
   {
     name: '바람 텍스처', volume: 1, category: 'texture', noise: 1,
@@ -357,7 +357,7 @@ const RAW = [
     filter: { type: 'bandpass', cutoff: 900, q: 2.5, env: 1, keytrack: 1 },
     filterEnv: { a: 2, d: 3, s: 0.6, r: 3 }, ampEnv: { a: 2, d: 2, s: 1, r: 3 },
     lfo: { target: 'filter', rate: 0.12, depth: 0.6 },
-    fx: { chorus: 0.4, reverb: 0.7, size: 6, width: 2 },
+    fx: { chorus: 0.4, reverb: 0.7, size: 6, width: 2, reverbType: 'ambient' },
   },
   {
     name: '테이프 앰비언트', volume: 0.65, category: 'texture', drift: 0.8,
@@ -365,7 +365,7 @@ const RAW = [
     filter: { cutoff: 2200, q: 0.6 },
     ampEnv: { a: 1.2, d: 2, s: 0.9, r: 3 },
     lfo: { target: 'pitch', rate: 0.5, depth: 0.05 },
-    fx: { lofi: 0.35, chorus: 0.3, reverb: 0.6, size: 5, shimmer: 0.2, width: 1.4 },
+    fx: { lofi: 0.35, chorus: 0.3, reverb: 0.6, size: 5, shimmer: 0.2, width: 1.4, reverbType: 'ambient', delay: 0.25, delayMode: 'tape', delayTone: 2400 },
     eq: { high: -3 },
   },
   {
@@ -374,7 +374,7 @@ const RAW = [
     fm: { amount: 0.12, ratio: 2, decay: 1.5, sustain: 0.2 },
     filter: { cutoff: 7000, keytrack: 0 },
     ampEnv: { a: 0.01, d: 4, s: 0.3, r: 5 },
-    fx: { shimmer: 0.8, reverb: 0.75, size: 7, delay: 0.35, delayBeats: 0.75, feedback: 0.5, width: 1.8 },
+    fx: { shimmer: 0.8, reverb: 0.75, size: 7, delay: 0.35, delayBeats: 0.75, feedback: 0.5, width: 1.8, reverbType: 'ambient', delayMode: 'pingpong', damp: 0.3 },
   },
 ];
 

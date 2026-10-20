@@ -330,3 +330,32 @@ export function withFades(x, sr, inMs = 0, outMs = 0) {
   for (let i = 0; i < b; i++) out[out.length - 1 - i] *= Math.sin(((i / b) * Math.PI) / 2);
   return out;
 }
+
+/** 16비트 WAV (여러 채널, 번갈아 담기). 이펙트를 입혀 좌우가 생긴 소리를 그대로 저장할 때. */
+export function encodeWavChannels(channels, sr, { gain = 1 } = {}) {
+  const ch = channels.length;
+  const n = channels[0].length;
+  const buf = new ArrayBuffer(44 + n * ch * 2);
+  const v = new DataView(buf);
+  const str = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  str(0, 'RIFF');
+  v.setUint32(4, 36 + n * ch * 2, true);
+  str(8, 'WAVE');
+  str(12, 'fmt ');
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, ch, true);
+  v.setUint32(24, sr, true);
+  v.setUint32(28, sr * ch * 2, true);
+  v.setUint16(32, ch * 2, true);
+  v.setUint16(34, 16, true);
+  str(36, 'data');
+  v.setUint32(40, n * ch * 2, true);
+  for (let i = 0; i < n; i++) {
+    for (let c = 0; c < ch; c++) {
+      const s = Math.max(-1, Math.min(1, channels[c][i] * gain));
+      v.setInt16(44 + (i * ch + c) * 2, Math.round(s < 0 ? s * 0x8000 : s * 0x7fff), true);
+    }
+  }
+  return new Uint8Array(buf);
+}

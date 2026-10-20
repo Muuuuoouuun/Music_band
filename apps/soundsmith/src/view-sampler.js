@@ -2,10 +2,10 @@
 // 기준 음·미세 조정(튜닝), 루프 방식, 크로스페이드, SFZ 악기 내보내기.
 import { h, panel, nextId } from './ui.js';
 import { drawSample, drawSeam } from './draw.js';
-import { peaks, trimSilence, detectPitch, findLoop, upwardZeroCrossings, encodeWav, sfzText, demoSample, toMono, reversed, withFades } from './sample.js';
+import { peaks, trimSilence, detectPitch, findLoop, upwardZeroCrossings, encodeWav, encodeWavChannels, sfzText, demoSample, toMono, reversed, withFades, peakOf } from './sample.js';
 import { paulstretch } from './analyze.js';
 import { noteName } from './tuning.js';
-import { renderNote } from './engine.js';
+import { renderNote, renderThroughFx } from './engine.js';
 import { makeZip } from './zip.js';
 import { saveFile } from './store.js';
 
@@ -71,6 +71,8 @@ export function SamplerView(root, app) {
   const useBtn = h('button', { type: 'button', class: 'primary' }, '이 샘플로 건반 연주');
   const stretchSel = h('select', { 'aria-label': '늘리는 배수' }, ...[2, 4, 8].map((v) => h('option', { value: v, selected: v === 4 || null }, `×${v}`)));
   const restoreBtn = h('button', { type: 'button', class: 'quiet' }, '원래대로');
+  const fxBtn = h('button', { type: 'button' }, '지금 음색의 이펙트 입히기');
+  const wavBtn = h('button', { type: 'button', class: 'quiet' }, 'WAV 로 저장');
   const exportBtn = h('button', { type: 'button' }, 'SFZ 악기 내보내기 (.zip)');
 
   const body = h('div', { class: 'sampler-body' },
@@ -100,7 +102,9 @@ export function SamplerView(root, app) {
         h('div', { class: 'joined' }, stretchSel,
           h('button', { type: 'button', onclick: () => processSample(`×${stretchSel.value}`, (x, sr) => paulstretch(x, sr, Number(stretchSel.value)), { pad: true }) }, '늘리기')),
         h('button', { type: 'button', onclick: () => processSample('페이드', (x, sr) => withFades(x, sr, 200, 400)) }, '앞뒤 페이드'),
-        restoreBtn)),
+        restoreBtn),
+      h('div', { class: 'btn-row' }, fxBtn, wavBtn),
+      h('p', { class: 'panel-hint' }, "'이펙트 입히기'는 음색 만들기의 드라이브·로파이·페이저·코러스·딜레이·잔향·EQ·폭을 이 소리에 구워 넣어요 (쉬머는 건반 음에만). 구운 뒤 건반으로 칠 때는 같은 이펙트가 또 걸리니 '이펙트 끄고 듣기'로 견줘 보세요.")),
     panel('재생 방식', {},
       h('div', { class: 'ctl ctl-seg' }, h('span', { class: 'label' }, '루프'), h('div', { class: 'seg', role: 'group', 'aria-label': '루프 방식' }, ...modeBtns)),
       modeHint,
@@ -212,6 +216,38 @@ export function SamplerView(root, app) {
     app.setSample(next);
     app.notice(`'${next.name}' 으로 바꿨어요.`, 'good');
   }
+  fxBtn.addEventListener('click', async () => {
+    const s = app.sample;
+    if (!s) return;
+    fxBtn.disabled = true;
+    app.notice('이펙트 입히는 중…');
+    try {
+      const buf = await renderThroughFx(app.patch, [s.data.slice(s.start, s.end)], s.sr, { bpm: app.studio.bpm });
+      const L = buf.getChannelData(0);
+      const R = buf.getChannelData(1);
+      const g = (10 ** (-1 / 20)) / (Math.max(peakOf(L), peakOf(R)) || 1);
+      const stereo = [Float32Array.from(L, (v) => v * g), Float32Array.from(R, (v) => v * g)];
+      const original = s.original ?? { name: s.name, data: s.data };
+      const next = analyzeSample(`${original.name} +이펙트`.slice(0, 40), toMono(stereo), s.sr, s.root);
+      next.fine = s.fine;
+      next.original = original;
+      next.stereo = stereo;
+      app.setSample(next);
+      app.notice(`'${next.name}' 으로 바꿨어요 (${(stereo[0].length / s.sr).toFixed(1)}초, 꼬리 포함). 'WAV 로 저장'은 좌우 그대로 저장해요.`, 'good');
+    } finally {
+      fxBtn.disabled = false;
+    }
+  });
+  wavBtn.addEventListener('click', async () => {
+    const s = app.sample;
+    if (!s) return;
+    const safe = s.name.replace(/[\\/:*?"<>|]+/g, '_').slice(0, 40) || 'sample';
+    const data = s.stereo
+      ? encodeWavChannels(s.stereo.map((c) => c.subarray(s.start, s.end)), s.sr)
+      : encodeWav(s.data, s.sr, { start: s.start, end: s.end, gain: 1 });
+    const r = await saveFile(`${safe}.wav`, data, 'audio/wav');
+    app.notice(r === 'saved' ? `${safe}.wav 를 저장했어요${s.stereo ? ' (스테레오)' : ''}.` : '이 화면에서는 파일을 저장할 수 없어요.', r === 'saved' ? 'good' : 'bad');
+  });
   restoreBtn.addEventListener('click', () => {
     const s = app.sample;
     if (!s?.original) return;
@@ -341,6 +377,7 @@ export function SamplerView(root, app) {
     exportBtn.disabled = !s;
     if (!s) return;
     restoreBtn.disabled = !s.original;
+    wavBtn.disabled = !s;
     const sec = (n) => `${(n / s.sr).toFixed(2)} s`;
     const d = s.detected;
     info.replaceChildren(

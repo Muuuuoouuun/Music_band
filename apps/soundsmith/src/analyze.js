@@ -625,6 +625,102 @@ function measureSpace(env, frameSec, e) {
 }
 
 // ---------------------------------------------------------------------------
+// 이펙트 꼬리 재기 (잔향·딜레이 시험)
+// ---------------------------------------------------------------------------
+
+/**
+ * 슈뢰더 적분: 끝에서부터 거꾸로 에너지를 더한 곡선(dB). 잔향이 줄어드는 기울기를 잡음 없이 볼 수 있다.
+ * RT60 은 −5dB~−25dB 구간 기울기(T20)를 60dB 로 늘린 값, 짧으면 −5~−15dB(T10).
+ */
+export function decayRt60(x, sr, { from = 0 } = {}) {
+  const n = x.length - from;
+  if (n < sr * 0.05) return null;
+  const edc = new Float64Array(n);
+  let acc = 0;
+  for (let i = n - 1; i >= 0; i--) {
+    acc += x[from + i] * x[from + i];
+    edc[i] = acc;
+  }
+  if (acc <= 0) return null;
+  const db = (i) => 10 * Math.log10(edc[i] / acc + 1e-30);
+  const at = (level) => {
+    let i = 0;
+    while (i < n - 1 && db(i) > level) i++;
+    return i;
+  };
+  for (const [hi, lo, k] of [[-5, -25, 3], [-5, -15, 6]]) {
+    const a = at(hi);
+    const b = at(lo);
+    if (b > a + sr * 0.01 && db(b) <= lo + 0.5) return ((b - a) / sr) * k;
+  }
+  return null;
+}
+
+/**
+ * 이펙트 시험 결과 재기: full·dry 렌더(같은 줄에서 딜레이·잔향만 뺀 것)로 젖은 소리를 구한다.
+ * 반환: rt60(꼬리 60dB 감쇠), onset(짧은 소리를 넣은 뒤 젖은 소리가 시작되는 때), wetDb(직접음 대비),
+ * width(젖은 소리의 좌우 넓이), echoes([{ t, left, right }] 딜레이 반복과 좌우 비율), 그림용 곡선.
+ */
+export function tailStats(full, dry, sr, { start = 0, frame = 0.005 } = {}) {
+  const n = full[0].length;
+  const wet = full.map((ch, c) => Float32Array.from(ch, (v, i) => v - dry[c][i]));
+  const mono = Float32Array.from(wet[0], (v, i) => (v + wet[1][i]) / 2);
+  let eWet = 0;
+  let eDry = 0;
+  let side = 0;
+  let mid = 0;
+  for (let i = 0; i < n; i++) {
+    eWet += wet[0][i] ** 2 + wet[1][i] ** 2;
+    eDry += dry[0][i] ** 2 + dry[1][i] ** 2;
+    side += ((wet[0][i] - wet[1][i]) / 2) ** 2;
+    mid += mono[i] ** 2;
+  }
+  const hop = Math.max(1, Math.round(sr * frame));
+  const frames = Math.floor(n / hop);
+  const curve = (chs) => Array.from({ length: frames }, (_, f) => {
+    let e = 0;
+    for (const ch of chs) for (let i = f * hop; i < (f + 1) * hop; i++) e += ch[i] * ch[i];
+    return 10 * Math.log10(e / hop + 1e-20);
+  });
+  const fullDb = curve(full);
+  const wetCurve = curve(wet);
+  const left = curve([wet[0]]);
+  const right = curve([wet[1]]);
+  const top = Math.max(...wetCurve);
+  const silent = eWet < eDry * 1e-5;
+  let onset = null;
+  if (!silent) {
+    const f = wetCurve.findIndex((v) => v > top - 20);
+    onset = Math.max(0, f * frame - start);
+  }
+  // 딜레이 반복: 젖은 소리 곡선의 봉우리 (전체 최고에서 30dB 안, 60ms 넘게 떨어진 것)
+  const echoes = [];
+  if (!silent) {
+    for (let f = 2; f < frames - 2; f++) {
+      const v = wetCurve[f];
+      if (v < top - 30 || v < wetCurve[f - 1] || v < wetCurve[f + 1] || v < wetCurve[f - 2] || v < wetCurve[f + 2]) continue;
+      // 주변 0.1초의 평균보다 확실히 튀어나온 봉우리만
+      const around = wetCurve.slice(Math.max(0, f - 20), f + 20);
+      const mean = around.reduce((a, b) => a + b, 0) / around.length;
+      if (v < mean + 4) continue;
+      const t = f * frame - start;
+      if (echoes.length && t - echoes.at(-1).t < 0.06) continue;
+      echoes.push({ t, left: left[f], right: right[f] });
+    }
+  }
+  const startIdx = Math.max(0, Math.round((start + (onset ?? 0)) * sr));
+  return {
+    silent,
+    rt60: silent ? null : decayRt60(mono, sr, { from: startIdx }),
+    onset,
+    wetDb: silent ? null : 10 * Math.log10(eWet / (eDry || 1e-20)),
+    width: silent || mid <= 0 ? 0 : Math.sqrt(side / mid),
+    echoes: echoes.slice(0, 12),
+    curve: { frame, start, full: fullDb, wet: wetCurve },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 필터·EQ 응답 (Web Audio BiquadFilter 와 같은 식) — 배음 보정과 맞춤 EQ 계산에 쓴다
 // ---------------------------------------------------------------------------
 
@@ -829,6 +925,8 @@ export function patchFromTone(a, { name = '닮은 음색' } = {}) {
 function applySpace(p, a, notes) {
   p.fx.reverb = round(a.space.amount, 2);
   p.fx.size = round(a.space.rt60, 2);
+  // 짧은 꼬리는 작은 방, 아주 긴 꼬리는 교회처럼
+  if (a.space.measured) p.fx.reverbType = a.space.rt60 < 1.2 ? 'room' : a.space.rt60 > 4 ? 'church' : 'hall';
   p.fx.width = round(clamp(0.7 + Math.max(0, a.width - p.fx.reverb * 0.6) * 1.8, 0, 2), 2);
   if (a.space.measured) notes.push(`잔향 ${a.space.rt60.toFixed(1)}초 · 양 ${Math.round(a.space.amount * 100)}%`);
 }

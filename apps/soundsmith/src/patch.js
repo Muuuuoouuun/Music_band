@@ -114,6 +114,21 @@ export function waveCycle(id, n = 64, custom = DEFAULT_CUSTOM, normalize = true)
   return out.map((v) => v / peak);
 }
 
+/** 잔향 종류: 같은 길이라도 첫 반사·밀도·밝기가 달라 방의 성격이 바뀐다. */
+export const REVERB_TYPES = [
+  { id: 'room', label: '룸', hint: '작은 방. 첫 반사가 빽빽하고 가까움 (기타·드럼·건반)' },
+  { id: 'hall', label: '홀', hint: '공연장. 고르고 부드러운 꼬리 (패드·현악)' },
+  { id: 'church', label: '교회', hint: '돌로 된 큰 공간. 천천히 차오르고 어둡게 길게 (오르간·합창)' },
+  { id: 'plate', label: '플레이트', hint: '철판 잔향. 반사 없이 바로 빽빽하고 밝음 (보컬·스네어)' },
+  { id: 'spring', label: '스프링', hint: '용수철 잔향. 띠잉 하는 금속성 반복 (기타 앰프·빈티지 건반)' },
+  { id: 'ambient', label: '앰비언트', hint: '천천히 부풀며 넓게 출렁임 (워십 패드·텍스처)' },
+];
+export const DELAY_MODES = [
+  { id: 'mono', label: '가운데', hint: '같은 자리에서 되풀이' },
+  { id: 'pingpong', label: '핑퐁', hint: '왼쪽·오른쪽을 번갈아 오감' },
+  { id: 'tape', label: '테이프', hint: '테이프처럼 살짝 흔들리고 반복될수록 따뜻하게' },
+];
+
 const FM_RATIOS = [0.5, 1, 1.5, 2, 3, 3.5, 4, 5, 7, 9, 14];
 const DELAY_BEATS = [0.25, 0.5, 0.75, 1, 1.5];
 
@@ -177,9 +192,13 @@ export const PARAMS = {
   'fx.delay': num('딜레이', 'pct', 0, 1),
   'fx.delayBeats': choice('딜레이 간격', DELAY_BEATS, ['1/16', '1/8', '점8분', '1/4', '점4분']),
   'fx.feedback': num('딜레이 반복', 'pct', 0, 0.9),
+  'fx.delayMode': choice('딜레이 방식', DELAY_MODES.map((m) => m.id), DELAY_MODES.map((m) => m.label)),
+  'fx.delayTone': log('딜레이 밝기', 'Hz', 600, 12000),
   'fx.reverb': num('잔향', 'pct', 0, 1),
+  'fx.reverbType': choice('잔향 종류', REVERB_TYPES.map((t) => t.id), REVERB_TYPES.map((t) => t.label)),
   'fx.size': log('잔향 길이', 's', 0.5, 8),
   'fx.predelay': num('프리딜레이', 's', 0, 0.25),
+  'fx.damp': num('고역 감쇠 (벽 흡음)', 'pct', 0, 1),
   'fx.tone': num('잔향 밝기', 'pct', 0, 1),
   'fx.shimmer': num('쉬머 (옥타브 위 잔향)', 'pct', 0, 1),
   'fx.phaser': num('페이저', 'pct', 0, 1),
@@ -221,8 +240,9 @@ export const BASE_PATCH = {
   ampEnv: { a: 0.005, d: 0.3, s: 0.8, r: 0.3 },
   lfo: { target: 'pitch', rate: 5, depth: 0, delay: 0 },
   fx: {
-    drive: 0, chorus: 0, delay: 0, delayBeats: 0.75, feedback: 0.35, reverb: 0.15, size: 2.2,
-    predelay: 0.02, tone: 0.6, shimmer: 0, phaser: 0, phaserRate: 0.4, lofi: 0, comp: 0, width: 1,
+    drive: 0, chorus: 0, delay: 0, delayBeats: 0.75, feedback: 0.35, delayMode: 'mono', delayTone: 4200,
+    reverb: 0.15, reverbType: 'hall', size: 2.2, predelay: 0.02, damp: 0.5, tone: 0.6, shimmer: 0,
+    phaser: 0, phaserRate: 0.4, lofi: 0, comp: 0, width: 1,
   },
   eq: { low: 0, mid: 0, midFreq: 1000, high: 0, match: MATCH_BANDS.map(() => 0) },
   vel: { amp: 0.65, filter: 0.8 },
@@ -267,6 +287,15 @@ export function normalizePatch(input = {}) {
   out.name = typeof src.name === 'string' && src.name.trim() ? src.name.trim().slice(0, 40) : BASE_PATCH.name;
   out.category = CATEGORIES.some((c) => c.id === src.category) ? src.category : BASE_PATCH.category;
   return out;
+}
+
+/** 이펙트를 모두 뺀 소리 (A/B 비교용): 드라이브·로파이·페이저·코러스·딜레이·잔향·쉬머·컴프·EQ·폭. */
+export function dryPatch(p) {
+  return {
+    ...p,
+    fx: { ...p.fx, drive: 0, lofi: 0, phaser: 0, chorus: 0, delay: 0, reverb: 0, shimmer: 0, comp: 0, width: 1 },
+    eq: { ...p.eq, low: 0, mid: 0, high: 0, match: p.eq.match.map(() => 0) },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +502,9 @@ export function randomPatch(kind = 'pad', seed = Date.now()) {
     }
     Object.assign(p.fx, { delay: r.range(0.15, 0.4), reverb: r.range(0.2, 0.4) });
   }
+  const rooms = { pad: ['hall', 'ambient'], keys: ['room', 'plate', 'hall', 'spring'], strings: ['hall', 'church'], choir: ['church', 'hall'], bass: ['room'], lead: ['plate', 'hall'], bell: ['plate', 'ambient', 'hall'], pluck: ['room', 'plate'], texture: ['ambient', 'church'] };
+  p.fx.reverbType = r.pick(rooms[kind] ?? ['hall']);
+  if (p.fx.delay > 0.05) p.fx.delayMode = r.pick(['mono', 'pingpong', 'pingpong', 'tape']);
   const label = CATEGORIES.find((c) => c.id === kind)?.label ?? '음색';
   p.name = `랜덤 ${label} ${r.int(10, 99)}`;
   return normalizePatch(p);
