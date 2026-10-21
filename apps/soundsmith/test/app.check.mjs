@@ -2,7 +2,8 @@
 // 예배 무대(패드·숫자 키·밝기×공간 판·다음 곡·루퍼 줄), 실험실(쓰임새·카드·도우미·배음 그리기·필터 끌기·
 // 패드/루퍼로 보내기), 샘플러 데모, 루퍼 녹음·실행 취소, 톤 맞추기(재기·노브·말 버튼·톤 곡선 끌기·A/B·방·
 // 다른 음색을 레퍼런스로·제안대로 맞추기·톤 기록), 음 높이 자세히(튜닝), 오르간 드로바·겹치기·나누기·피아노 샘플,
-// 무대의 로터리·전환 효과음·드론, 반주 만들기, 샘플 패드(데모 비트·패드·패턴·로파이). 콘솔 오류나 가로 넘침이 있으면 실패.
+// 하이브리드(겹치기·나누기·파트 끄기), 무대의 로터리·전환 효과음·드론, 반주 만들기(마디 칸·스타일·이유·베이스 따로·미리 듣기·ChordPro),
+// 샘플 패드(데모 비트·이름 짐작·패드·패턴·되돌리기·2마디·직접 자르기·로파이). 콘솔 오류나 가로 넘침이 있으면 실패.
 // 실행: npm start 로 서버를 띄운 뒤 node test/app.check.mjs  (SHOTS=폴더 를 주면 화면을 저장)
 import { chromium, launchOptions } from './browser.mjs';
 
@@ -156,14 +157,22 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   await page.keyboard.press('ArrowDown');
   r.bars = await page.evaluate(() => window.soundsmith.patch.organ.bars.join(''));
   r.organOverflow = await overflow();
-  // 겹치기·나누기
+  // 하이브리드: 겹치기 → C4 에서 나누기 → 파트 끄기 → 건반 띠 화살표 → 풀고 빼기
   await page.locator('.flow-node').filter({ has: page.locator('.flow-title:text-is("겹치기·나누기")') }).click();
-  await page.click('text=+ 워십 패드 깔기');
-  await page.click('text=왼손 베이스로 나누기 (C4)');
+  await page.selectOption('.hybrid select[aria-label="겹칠 음색"]', 'worship-pad');
+  await page.click('text=+ 음색 겹치기');
+  await page.click('.hybrid >> text=C4 에서 나누기');
   r.layers = await page.evaluate(() => `${window.soundsmith.patch.keys.lo}|${window.soundsmith.patch.layers.map((l) => `${l.patch.name}:${l.lo}-${l.hi}`).join(',')}`);
+  await page.locator('.keystrip-canvas').focus();
+  await page.keyboard.press('ArrowLeft');
+  r.splitMoved = await page.evaluate(() => window.soundsmith.patch.keys.lo);
+  await page.locator('.part-on').first().click();
+  r.layerOff = await page.evaluate(() => window.soundsmith.patch.layers[0].on === false);
   await shot('lab-layers');
   r.layersOverflow = await overflow();
-  await page.click('text=겹침·나누기 모두 풀기');
+  await page.click('.hybrid >> text=나누기 풀기');
+  await page.locator('.part-del').first().click();
+  r.layersCleared = await page.evaluate(() => window.soundsmith.patch.layers.length === 0 && window.soundsmith.patch.keys.lo === 0);
   await page.locator('.kind-chip[data-kind="all"]').click();
   // 패드·루퍼로 보내기
   await page.click('text=무대 패드에 올리기');
@@ -201,21 +210,37 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   r.looperOverflow = await overflow();
   await shot('looper');
   await page.click('.looper-slot >> text=■ 정지');
-  // 반주 만들기
-  await page.click('.arranger summary');
-  await page.fill('.chart-input', '| C | G/B | Am7 | Fadd9 | F | C/E | Dm7 | Gsus4 |');
-  await page.click('text=트랙에 넣기');
-  r.arr = await page.evaluate(() => { const i = window.soundsmith.looper.info(); return `${i.clock.bars}|${i.tracks[1].notes.length > 20}|${i.tracks[1].sound.label}|${i.lifts.join()}`; });
+  // 반주 만들기: 마디 칸 고치기 → 후렴 스타일 → 이유 → 넣기(베이스는 트랙 3) → 미리 듣기 → ChordPro
+  await page.click('.arr-open');
+  const chords = ['C', 'G/B', 'Am7', 'Fadd9', 'F', 'C/E', 'Dm7', 'Gsus4 G'];
+  for (const [i, c] of chords.entries()) await page.fill(`[aria-label="${i < 4 ? '절' : '후렴'} ${(i % 4) + 1}마디 코드"]`, c);
+  await page.click('.arr-row >> nth=1');
+  await page.click('.arr-style >> text=아르페지오');
+  r.arrWhy = await page.textContent('.arr-reasons');
+  await page.click('.arr-put');
+  r.arr = await page.evaluate(() => { const i = window.soundsmith.looper.info(); return `${i.clock.bars}|${i.tracks[1].notes.length > 20}|${i.tracks[1].sound.label}|${i.tracks[2].sound.label}|${i.lifts.join()}`; });
+  await page.click('.arr-preview');
+  await page.waitForTimeout(400);
+  r.arrPreview = await page.evaluate(() => window.soundsmith.looper.arranger.info().preview);
+  await page.click('.arr-preview');
+  await page.setInputFiles('.arranger input[type=file]', { name: '시험.cho', mimeType: 'text/plain', buffer: Buffer.from('{title: 시험 곡}\n{key: G}\n{start_of_verse: 1절}\n[G] | [D/F#] | [Em7] | [Cadd9] |\n{end_of_verse}\n{start_of_chorus: 후렴}\n[C] | [G/B] | [Am7] | [Dsus4] [D] |\n{end_of_chorus}') });
+  await page.waitForFunction(() => window.soundsmith.looper.arranger.info().sections[0].chords[0] === 'G');
+  r.arrCho = await page.evaluate(() => window.soundsmith.looper.arranger.info().sections.map((x) => `${x.name}:${x.chords.length}`).join(','));
+  await shot('arranger');
   r.arrangerOverflow = await overflow();
   await page.click('text=한 줄로 접기 ▴');
   r.tabs = await page.locator('.tab').count();
   // 로터리·전환·드론
   await page.evaluate(() => window.soundsmith.loadPreset(window.soundsmith.findPreset('gospel-organ')));
-  await page.locator('.rotary-btn').click();
+  await page.locator('.rotary-card').click();
   r.rotary = await page.evaluate(() => window.soundsmith.patch.fx.rotaryFast);
-  await page.click('.fx-btn[data-fx="impact"]');
+  // 루퍼가 도는 동안 누르면 다음 마디 첫 박에 예약되고, 남은 박을 센다
+  await page.click('.strip .strip-btn >> nth=0');
   await page.waitForTimeout(300);
-  r.fxState = await page.textContent('.fx-state');
+  await page.click('.fx-card[data-fx="impact"]');
+  await page.waitForTimeout(250);
+  r.fxState = `${await page.textContent('.countdown')}|${await page.locator('.fx-card[data-fx="impact"] .fx-badge').isVisible()}`;
+  await page.click('.strip .strip-btn >> nth=0');
   await page.click('.drone-btn');
   await page.waitForTimeout(150);
   r.drone = await page.evaluate(() => window.soundsmith.stage.drone()?.voices ?? 0);
@@ -241,6 +266,21 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   await page.waitForTimeout(600);
   r.seqPlaying = await page.evaluate(() => window.soundsmith.pads.info().playing);
   await page.click('.pads-seq .transport-btn >> nth=0');
+  r.padNames = await page.evaluate(() => window.soundsmith.pads.info().names.slice(0, 3).join(','));
+  r.padTitle = await page.textContent('.pad-title');
+  const cell = page.locator('.step-row.is-selected .step').nth(3);
+  await cell.click();
+  await cell.click();
+  await page.click('.seq-undo');
+  r.padUndo = await cell.getAttribute('data-v');
+  await page.click('.seg-btn[data-bars="2"]');
+  r.padBars = await page.locator('.step-row.is-selected .step').count();
+  await page.click('.chop-seg .seg-btn[data-mode="grid8"]');
+  const n0s = await page.evaluate(() => window.soundsmith.pads.info().slices);
+  await page.click('.chop-seg .seg-btn[data-mode="manual"]');
+  const wb = await boxOf(page, '.pads-wave');
+  await page.mouse.click(wb.x + wb.width * 0.07, wb.y + wb.height * 0.6);
+  r.padManual = `${n0s}|${await page.evaluate(() => window.soundsmith.pads.info().slices)}`;
   await page.click('text=SP-1200 느낌');
   r.padFx = await page.evaluate(() => JSON.stringify(window.soundsmith.pads.info().fx));
   await shot('pads');
@@ -335,16 +375,26 @@ for (const [name, r] of Object.entries(results)) {
   expect(r.tabs === 4, '탭 4개');
   expect(r.organCards === 6, `오르간 종류 ${r.organCards}`);
   expect(r.bars === '888700000', `드로바 ${r.bars}`);
-  expect(r.layers === '60|워십 패드:0-127,무그풍 베이스:0-59', `겹치기 ${r.layers}`);
-  expect(r.arr === '8|true|워십 패드|3', `반주 ${r.arr}`);
+  expect(r.layers === '60|워십 패드:0-59', `겹치기 ${r.layers}`);
+  expect(r.splitMoved === 59, `나누는 점 화살표 ${r.splitMoved}`);
+  expect(r.layerOff && r.layersCleared, '파트 끄기·풀기');
+  expect(r.arr === '8|true|워십 패드|서브 베이스|3', `반주 ${r.arr}`);
+  expect(/4 → 3/.test(r.arrWhy) && /베이스 B/.test(r.arrWhy), `보이싱 이유 ${r.arrWhy}`);
+  expect(r.arrPreview === true, '반주 미리 듣기');
+  expect(r.arrCho === '1절:4,후렴:4', `ChordPro ${r.arrCho}`);
   expect(r.rotary === true, '로터리 빠르게');
-  expect(/임팩트/.test(r.fxState), `전환 ${r.fxState}`);
+  expect(/임팩트/.test(r.fxState) && r.fxState.endsWith('|true'), `전환 ${r.fxState}`);
   expect(r.drone === 3, '드론');
   expect(r.pianoVoices >= 1, '피아노 샘플');
   expect(r.padsSlices >= 12, `조각 ${r.padsSlices}`);
   expect(r.padVoices >= 1, '패드 소리');
   expect(r.seqPlaying, '패턴 재생');
-  expect(r.padFx === '{"bits":12,"lofi":0.25,"rate":26040}', '로파이');
+  expect(r.padNames === '킥 1,스네어 1,닫힌 햇 1', `패드 이름 ${r.padNames}`);
+  expect(/패드 2 · 스네어 1/.test(r.padTitle), `고른 패드 ${r.padTitle}`);
+  expect(r.padUndo === '1', '지운 칸 되돌리기');
+  expect(r.padBars === 32, '2마디');
+  expect(r.padManual === '8|9', `직접 자르기 ${r.padManual}`);
+  expect(r.padFx === '{"bits":12,"rate":26040,"noise":0.2,"wobble":0.15,"lofi":0.2}', `로파이 ${r.padFx}`);
   expect(r.padAssigned, '패드에 올리기');
   expect(r.trackSound, '루퍼로 보내기');
   expect(r.sample.root === 'A2' && r.sample.source === 'sample', '데모 샘플');

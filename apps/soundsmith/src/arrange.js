@@ -59,10 +59,9 @@ const pcOf = (m) => ((m % 12) + 12) % 12;
  * 예배 건반식 열린 보이싱: 왼손 = 베이스(옥타브), 오른손 = 근음·5도·9도·3도를 넓게 (wide) 또는 3화음 가깝게.
  * prev 가 있으면 오른손을 가장 덜 움직이는 자리로 (목소리 이끌기).
  */
-export function voiceChord(chord, { wide = false, prev = null, low = 52, high = 79 } = {}) {
+export function voiceChord(chord, { wide = false, prev = null, low = 52, high = 79, variant = 0 } = {}) {
   // 베이스는 E2–D#3 안에서 (너무 낮으면 탁해서 C·C#·D·D# 는 한 옥타브 위)
   const bassNote = 36 + chord.bass + (chord.bass < 4 ? 12 : 0);
-  const left = wide ? [bassNote, bassNote + 12] : [bassNote];
   let colors = chord.tones.map((t) => t % 12);
   if (wide && colors.length === 3 && colors.includes(4) && colors.includes(7) && !colors.includes(2)) colors = [0, 7, 2, 4]; // 장3화음은 add9 로 넓게
   if (wide && colors.length === 3 && colors.includes(3) && colors.includes(7)) colors = [0, 7, 10, 3]; // 단3화음은 m7 색
@@ -84,37 +83,47 @@ export function voiceChord(chord, { wide = false, prev = null, low = 52, high = 
   const center = (ns) => ns.reduce((a, b) => a + b, 0) / ns.length;
   const target = prev ? center(prev) : wide ? 66 : 64;
   candidates.sort((a, b) => Math.abs(center(a) - target) - Math.abs(center(b) - target));
-  const right = candidates[0] ?? pcs.map((pc) => 60 + pc);
+  // '다른 보이싱으로 다시': 가까운 순서로 다음 자리
+  const right = candidates[variant % Math.max(1, candidates.length)] ?? pcs.map((pc) => 60 + pc);
+  // 넓게: 베이스를 옥타브로 (오른손과 같은 음이면 겹치지 않게 뺀다)
+  const left = (wide ? [bassNote, bassNote + 12] : [bassNote]).filter((m) => !right.includes(m));
   return { left, right };
 }
 
 /**
- * 진행 + 스타일 → 루퍼 음표 [{ midi, velocity, t, dur, iter: -1, pass: 1 }] (t, dur 는 박).
- * sections: 마디마다 'narrow' | 'wide' (없으면 모두 style 기본값)
+ * 진행 + 스타일 → 루퍼 음표 [{ midi, velocity, t, dur, iter: -1, pass: 1, part: 'left'|'right' }] (t, dur 는 박).
+ * widths: 마디마다 'narrow' | 'wide', styles: 마디마다 스타일 (없으면 style), variant: 다른 보이싱 번호.
+ * 돌려주는 배열에 voicings([{ bar, chord, left, right }]) 도 붙여 둔다 (미리 보기·이유 설명용).
  */
-export function arrange(bars, { style = 'pad', beatsPerBar = 4, wide = false, widths = null } = {}) {
+export function arrange(bars, { style = 'pad', beatsPerBar = 4, wide = false, widths = null, styles = null, variant = 0 } = {}) {
   const notes = [];
+  const voicings = [];
   let prev = null;
-  const add = (midi, t, dur, velocity) => notes.push({ midi, velocity, t, dur, iter: -1, pass: 1 });
+  let part = 'right';
+  const add = (midi, t, dur, velocity) => notes.push({ midi, velocity, t, dur, iter: -1, pass: 1, part });
   bars.forEach((chords, b) => {
     const span = beatsPerBar / chords.length;
+    const st = styles?.[b] ?? style;
     chords.forEach((chord, k) => {
       const t0 = b * beatsPerBar + k * span;
       const isWide = widths ? widths[b] === 'wide' : wide;
-      const v = voiceChord(chord, { wide: isWide, prev });
+      const v = voiceChord(chord, { wide: isWide, prev, variant });
       prev = v.right;
+      voicings.push({ bar: b, chord, ...v });
+      const style = st; // eslint-disable-line no-shadow
+      const left = (fn) => { part = 'left'; fn(); part = 'right'; };
       if (style === 'pad') {
-        for (const m of v.left) add(m, t0, span - 0.05, 0.62);
+        left(() => { for (const m of v.left) add(m, t0, span - 0.05, 0.62); });
         for (const m of v.right) add(m, t0, span - 0.05, 0.58);
       } else if (style === 'pulse') {
-        for (const m of v.left) add(m, t0, span - 0.05, 0.6);
+        left(() => { for (const m of v.left) add(m, t0, span - 0.05, 0.6); });
         for (let e = 0; e < span * 2; e++) for (const m of v.right) add(m, t0 + e * 0.5, 0.42, e % 2 ? 0.45 : 0.62);
       } else if (style === 'arp') {
-        add(v.left[0], t0, span - 0.05, 0.6);
+        left(() => add(v.left[0], t0, span - 0.05, 0.6));
         const up = [...v.right, v.right[0] + 12];
         for (let e = 0; e < span * 2; e++) add(up[e % up.length], t0 + e * 0.5, 0.48, 0.52 + (e % up.length === 0 ? 0.1 : 0));
       } else {
-        for (const m of v.left) add(m, t0, span - 0.05, 0.6);
+        left(() => { for (const m of v.left) add(m, t0, span - 0.05, 0.6); });
         for (let beat = 0; beat < span; beat++) {
           const abs = k * span + beat;
           if (abs % 2 === 1) for (const m of v.right) add(m, t0 + beat, 0.35, 0.62);
@@ -122,7 +131,75 @@ export function arrange(bars, { style = 'pad', beatsPerBar = 4, wide = false, wi
       }
     });
   });
+  notes.voicings = voicings;
   return notes;
+}
+
+const NAMES_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const NAMES_FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+// 조표에 플랫이 붙는 장조 (F·Bb·Eb·Ab·Db·Gb) 에서는 플랫으로 적는다
+const FLAT_KEYS = [5, 10, 3, 8, 1, 6];
+export const pcName = (pc, key = 0) => (FLAT_KEYS.includes(((key % 12) + 12) % 12) ? NAMES_FLAT : NAMES_SHARP)[((pc % 12) + 12) % 12];
+export const noteText = (m, key = 0) => `${pcName(m, key)}${Math.floor(m / 12) - 1}`;
+
+/** 코드 이름을 반음 semis 만큼 옮긴다 ('G/B' +2 → 'A/C#'). 새 조(key)에 맞춰 샵·플랫. */
+export function transposeName(name, semis, key = semis) {
+  const m = /^([A-G][#b♯♭]?)(.*?)(?:\/([A-G][#b♯♭]?))?$/.exec(name.trim());
+  if (!m) return name;
+  const pcOfName = (n) => (PC[n[0]] + (n[1] === '#' || n[1] === '♯' ? 1 : n[1] === 'b' || n[1] === '♭' ? -1 : 0) + 12) % 12;
+  const root = pcName(pcOfName(m[1]) + semis, key);
+  return m[3] ? `${root}${m[2]}/${pcName(pcOfName(m[3]) + semis, key)}` : `${root}${m[2]}`;
+}
+
+/** 보이싱을 왜 이렇게 했는지 한 줄 (미리 보기 아래 '보이싱 이유') */
+export function voicingReason(v, key = 0) {
+  const notes = [...v.left, ...v.right].sort((a, b) => a - b).map((m) => noteText(m, key)).join(' · ');
+  const pcs = v.right.map((m) => (((m - v.chord.root) % 12) + 12) % 12);
+  let why = '앞 코드와 가장 가까운 자리로 이어 손 모양이 크게 바뀌지 않아요';
+  if (v.chord.bass !== v.chord.root) why = `베이스 ${pcName(v.chord.bass, key)} 위에 ${pcName(v.chord.root, key)} 코드 — 베이스 라인이 계단처럼 이어져요`;
+  else if (v.chord.tones.includes(5) && !v.chord.tones.includes(4)) why = '4도를 붙잡아 긴장 — 다음에 3도로 풀면 끝맺는 느낌';
+  else if (pcs.includes(2) && pcs.includes(4)) why = '3도 위에 9도를 붙인 열린 add9 — 예배 건반의 넓은 울림';
+  else if (pcs.includes(10) && pcs.includes(3)) why = '단7을 열어 부드럽게 — 3도와 7도가 손가락 하나 차이';
+  return { name: v.chord.name, notes, why };
+}
+
+/**
+ * band2sheet 가 내보낸 ChordPro (.cho) 읽기: {title}·{key}·{tempo}·{time}, {start_of_verse: 1절}…,
+ * 줄마다 ' | ' 로 나뉜 마디, 마디 안의 [코드]. 돌려주는 값: { title, key, tempo, time, sections: [{ name, kind, bars: [[코드 이름]] }] }
+ */
+export function parseChordPro(text) {
+  const out = { title: '', key: '', tempo: null, time: '', sections: [] };
+  let cur = null;
+  const open = (name, kind) => {
+    cur = { name, kind, bars: [] };
+    out.sections.push(cur);
+  };
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const dir = /^\{\s*([a-z_]+)\s*(?::\s*(.*?))?\s*\}$/i.exec(line);
+    if (dir) {
+      const [, k, v = ''] = dir;
+      const key = k.toLowerCase();
+      if (key === 'title' || key === 't') out.title = v;
+      else if (key === 'key' && !out.key) out.key = v;
+      else if (key === 'tempo') out.tempo = Number(v) || null;
+      else if (key === 'time') out.time = v;
+      else if (key.startsWith('start_of_')) open(v || key.slice(9), key.slice(9));
+      else if (key.startsWith('end_of_')) cur = null;
+      else if (key === 'comment' || key === 'c') open(v, 'other');
+      continue;
+    }
+    if (!line.includes('[')) continue;
+    if (!cur) open('곡', 'other');
+    for (const cell of line.split('|')) {
+      const chords = [...cell.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1].trim()).filter((c) => c && c !== '/');
+      if (chords.length) cur.bars.push(chords);
+      else if (/\[\/\]/.test(cell) && cur.bars.length) cur.bars.push([...cur.bars.at(-1)]);
+    }
+  }
+  out.sections = out.sections.filter((x) => x.bars.length);
+  return out;
 }
 
 /** 후렴(넓게) 바로 앞 마디: 라이저를 놓기 좋은 곳 (마디 번호들, 0부터) */

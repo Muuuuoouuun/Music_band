@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectOnsets, gridStarts, slicesFrom, nearestZero, estimateTempo, timeStretch, holdDecimate, demoBeat, firstSound } from '../src/chop.js';
-import { stepBeat, starterPattern, replayPattern, defaultPad, PAD_COUNT, STEPS } from '../src/pads.js';
+import { detectOnsets, gridStarts, slicesFrom, nearestZero, estimateTempo, timeStretch, holdDecimate, demoBeat, firstSound, guessKind, nameSlices } from '../src/chop.js';
+import { stepBeat, starterPattern, replayPattern, defaultPad, toBars, PAD_COUNT, STEPS } from '../src/pads.js';
 
 test('데모 비트: 2마디, 첫 소리가 0, 시작점을 16개까지 찾고 순서대로', () => {
   const d = demoBeat(44100, 90);
@@ -65,4 +65,41 @@ test('패턴: 스윙은 16분 두 개 중 뒤를 늦추고, 원래 순서대로�
   assert.equal(r[1][4], 2);
   assert.equal(r[2][6], 1);
   assert.ok(r[3].every((v) => v === 0), '첫 마디 밖은 넣지 않음');
+});
+
+test('조각 이름 짐작: 킥·닫힌 햇·열린 햇·스네어·코드 스탭·베이스', () => {
+  const sr = 44100;
+  const make = (sec, fn) => Float32Array.from({ length: Math.round(sr * sec) }, (_, i) => fn(i / sr, i));
+  let s = 3;
+  const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2147483648) - 1;
+  const kick = make(0.5, (t) => Math.sin(2 * Math.PI * (50 + 60 * Math.exp(-t / 0.03)) * t) * Math.exp(-t / 0.15));
+  let prev = 0;
+  const hp = () => { const v = rnd(); const d = v - prev; prev = v; return d; };
+  const hat = make(0.08, (t) => hp() * Math.exp(-t / 0.015));
+  const open = make(0.3, (t) => hp() * Math.exp(-t / 0.08));
+  let lp = 0;
+  const snare = make(0.3, (t) => { lp += (rnd() - lp) * 0.5; return 0.6 * lp * Math.exp(-t / 0.09) + 0.4 * Math.sin(2 * Math.PI * 190 * t) * Math.exp(-t / 0.05); });
+  const stab = make(1, (t) => [220, 277.2, 329.6, 415.3].reduce((a, f) => a + Math.sin(2 * Math.PI * f * t), 0) * 0.2 * Math.exp(-t / 0.6));
+  const bass = make(1.2, (t) => Math.sin(2 * Math.PI * 55 * t) * 0.8);
+  assert.equal(guessKind(kick, sr).kind, 'kick');
+  assert.equal(guessKind(hat, sr).kind, 'hat');
+  assert.equal(guessKind(open, sr).kind, 'open-hat');
+  assert.equal(guessKind(snare, sr).kind, 'snare');
+  assert.equal(guessKind(stab, sr).kind, 'stab');
+  assert.equal(guessKind(bass, sr).kind, 'bass');
+  // 같은 이름이 여럿이면 번호
+  const all = new Float32Array(kick.length + hat.length + kick.length);
+  all.set(kick, 0);
+  all.set(hat, kick.length);
+  all.set(kick, kick.length + hat.length);
+  const names = nameSlices(all, sr, [{ start: 0, end: kick.length }, { start: kick.length, end: kick.length + hat.length }, { start: kick.length + hat.length, end: all.length }]);
+  assert.deepEqual(names.map((x) => x.label), ['킥 1', '닫힌 햇', '킥 2']);
+});
+
+test('패턴 2마디: 앞 마디를 베껴 32칸으로', () => {
+  const one = starterPattern();
+  const two = toBars(one, 2);
+  assert.equal(two[0].length, STEPS * 2);
+  assert.deepEqual(two[0].slice(STEPS), one[0]);
+  assert.deepEqual(two[1].slice(0, STEPS), one[1]);
 });

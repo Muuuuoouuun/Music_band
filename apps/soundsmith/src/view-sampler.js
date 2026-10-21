@@ -7,6 +7,7 @@ import { noteName } from './tuning.js';
 import { renderNote } from './engine.js';
 import { makeZip } from './zip.js';
 import { saveFile } from './store.js';
+import { micButton } from './mic.js';
 
 const LOOP_MODES = [
   { id: 'off', label: '한 번만', hint: '끝까지 한 번 울리고 멈춤 (드럼·효과음)' },
@@ -144,46 +145,10 @@ export function SamplerView(root, app) {
       bakeBtn.disabled = false;
     }
   });
-  let recorder = null;
-  recBtn.addEventListener('click', async () => {
-    if (recorder) {
-      recorder.stop();
-      return;
-    }
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      app.notice('이 브라우저(또는 이 화면)에서는 마이크를 쓸 수 없어요. 파일을 불러오거나 데모 소리를 쓰세요.', 'bad');
-      return;
-    }
-    let stream;
-    try {
-      const ctx = await app.ensureAudio();
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-      const chunks = [];
-      recorder = new MediaRecorder(stream);
-      recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        clearTimeout(recorder.limit);
-        recorder = null;
-        recBtn.textContent = '● 마이크로 녹음';
-        recBtn.classList.remove('recording');
-        try {
-          const buf = await ctx.decodeAudioData(await new Blob(chunks).arrayBuffer());
-          accept(analyzeSample('내 녹음', toMono([buf.getChannelData(0)]), buf.sampleRate));
-        } catch {
-          app.notice('녹음한 소리를 읽지 못했어요. 다시 녹음해 보세요.', 'bad');
-        }
-      };
-      recorder.start();
-      recorder.limit = setTimeout(() => recorder?.stop(), 10000);
-      recBtn.textContent = '■ 녹음 멈추기 (최대 10초)';
-      recBtn.classList.add('recording');
-      app.notice('한 음을 길게 내 주세요. 이어폰을 끼면 스피커 소리가 섞이지 않아요.');
-    } catch {
-      stream?.getTracks().forEach((t) => t.stop());
-      recorder = null;
-      app.notice('마이크를 열지 못했어요. 브라우저의 마이크 권한을 확인하거나, 파일을 불러오세요.', 'bad');
-    }
+  micButton(app, recBtn, {
+    maxSec: 10,
+    hint: '한 음을 길게 내 주세요. 이어폰을 끼면 스피커 소리가 섞이지 않아요.',
+    onBuffer: (buf) => accept(analyzeSample('내 녹음', toMono([buf.getChannelData(0)]), buf.sampleRate)),
   });
 
   // ---- 값 바꾸기 ----

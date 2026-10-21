@@ -640,63 +640,137 @@ export function drawToneEq(canvas, tone, { focus = null, range = 12, sr = 44100 
 }
 
 // ---------------------------------------------------------------------------
-// 겹치기·나누기: 88건반(A0–C8) 위에 파트마다 소리 나는 범위를 막대로.
-// parts: [{ lo, hi, label, color }] (color 는 토큰 이름)
+// 겹치기·나누기 건반 띠 (시안 H1): 위에 파트마다 범위 막대(번호·이름 왼쪽, 범위 오른쪽), 아래 88건반.
+// 겹친 음색만 덮는 건반은 그 파트 색으로 옅게 칠하고, 나누는 점은 흰 점선 + 이름표.
+// parts: [{ lo, hi, label, note, color, on }] (color 는 토큰 이름). 돌려주는 값으로 끌기를 계산한다.
 // ---------------------------------------------------------------------------
 
-export function drawKeyRanges(canvas, parts) {
+const KEY_LO = 21;
+const KEY_HI = 108;
+const isBlack = (m) => [1, 3, 6, 8, 10].includes(((m % 12) + 12) % 12);
+
+export function drawKeyStrip(canvas, parts, { split = null } = {}) {
   const { g, w, h } = fit(canvas);
-  const LO = 21;
-  const HI = 108;
+  const pad = 8;
+  const rowH = 22;
+  const rowsTop = 10;
+  const keyTop = rowsTop + parts.length * (rowH + 6) + 6;
+  const keyH = Math.max(60, h - keyTop - 30);
   const whites = [];
-  for (let m = LO; m <= HI; m++) if (![1, 3, 6, 8, 10].includes(m % 12)) whites.push(m);
-  const kw = (w - 2) / whites.length;
-  const keyTop = h - 34;
-  const xOfWhite = (m) => 1 + whites.indexOf(m) * kw;
-  // 건반 위치 → 가로 좌표 (검은 건반은 두 흰 건반 사이)
+  for (let m = KEY_LO; m <= KEY_HI; m++) if (!isBlack(m)) whites.push(m);
+  const kw = (w - 2 * pad) / whites.length;
+  const wx = (m) => pad + whites.indexOf(m) * kw;
   const xOf = (m) => {
-    const c = Math.max(LO, Math.min(HI, m));
-    return whites.includes(c) ? xOfWhite(c) : xOfWhite(c - 1) + kw * 0.7;
+    const c = Math.max(KEY_LO, Math.min(KEY_HI, m));
+    return isBlack(c) ? wx(c - 1) + kw * 0.68 : wx(c);
   };
   const xEnd = (m) => {
-    const c = Math.max(LO, Math.min(HI, m));
-    return whites.includes(c) ? xOfWhite(c) + kw : xOfWhite(c - 1) + kw * 1.3;
+    const c = Math.max(KEY_LO, Math.min(KEY_HI, m));
+    return isBlack(c) ? wx(c - 1) + kw * 1.32 : wx(c) + kw;
   };
-  g.fillStyle = color('key-white');
-  g.fillRect(1, keyTop, w - 2, 34);
-  g.strokeStyle = '#b9ae94';
-  g.lineWidth = 1;
-  for (let i = 0; i <= whites.length; i++) {
-    const x = Math.round(1 + i * kw) + 0.5;
-    g.beginPath();
-    g.moveTo(x, keyTop);
-    g.lineTo(x, h);
-    g.stroke();
+  // 건반: 겹친 음색만 덮는 곳은 그 색으로 옅게
+  const tintOf = (m) => {
+    const main = parts[0];
+    if (main && main.on !== false && m >= main.lo && m <= main.hi) return null;
+    const other = parts.slice(1).find((p) => p.on !== false && m >= p.lo && m <= p.hi);
+    return other ? other.color : null;
+  };
+  for (const m of whites) {
+    g.fillStyle = color('key-white');
+    g.fillRect(wx(m), keyTop, kw, keyH);
+    const t = tintOf(m);
+    if (t) {
+      g.fillStyle = color(t);
+      g.globalAlpha = 0.28;
+      g.fillRect(wx(m), keyTop, kw, keyH);
+      g.globalAlpha = 1;
+    }
+    g.strokeStyle = '#b9ae94';
+    g.lineWidth = 1;
+    g.strokeRect(Math.round(wx(m)) + 0.5, keyTop + 0.5, kw, keyH - 1);
   }
-  g.fillStyle = color('key-black');
-  for (let m = LO; m <= HI; m++) if ([1, 3, 6, 8, 10].includes(m % 12)) g.fillRect(xOfWhite(m - 1) + kw * 0.68, keyTop, kw * 0.64, 20);
+  for (let m = KEY_LO; m <= KEY_HI; m++) {
+    if (!isBlack(m)) continue;
+    g.fillStyle = color('key-black');
+    g.fillRect(wx(m - 1) + kw * 0.68, keyTop, kw * 0.64, keyH * 0.6);
+  }
   g.font = `10px ${color('font-data')}`;
   g.fillStyle = color('key-white-ink');
   for (let o = 1; o <= 8; o++) {
     const m = 12 * (o + 1);
-    if (m <= HI) g.fillText(`C${o}`, xOfWhite(m) + 2, h - 3);
+    if (m <= KEY_HI) g.fillText(`C${o}`, wx(m) + 3, keyTop + keyH - 5);
   }
-  const rowH = Math.max(14, Math.min(22, (keyTop - 8) / Math.max(1, parts.length) - 4));
-  parts.forEach((p, i) => {
-    const y = 4 + i * (rowH + 4);
-    const x0 = xOf(Math.max(LO, p.lo));
-    const x1 = xEnd(Math.min(HI, p.hi));
+  // 범위 막대
+  const rows = parts.map((p, i) => {
+    const y0 = rowsTop + i * (rowH + 6);
+    const x0 = xOf(Math.max(KEY_LO, p.lo));
+    const x1 = xEnd(Math.min(KEY_HI, p.hi));
+    g.globalAlpha = p.on === false ? 0.35 : 1;
+    g.fillStyle = color('raised');
+    g.fillRect(x0, y0, Math.max(4, x1 - x0), rowH);
     g.fillStyle = color(p.color);
-    g.globalAlpha = 0.85;
-    g.fillRect(x0, y, Math.max(3, x1 - x0), rowH);
+    g.globalAlpha *= 0.3;
+    g.fillRect(x0, y0, Math.max(4, x1 - x0), rowH);
+    g.globalAlpha = p.on === false ? 0.35 : 1;
+    g.strokeStyle = color(p.color);
+    g.lineWidth = 1.5;
+    g.strokeRect(x0 + 0.75, y0 + 0.75, Math.max(4, x1 - x0) - 1.5, rowH - 1.5);
+    g.fillRect(x0, y0, 4, rowH);
+    g.fillRect(x1 - 4, y0, 4, rowH);
+    g.font = `600 12px ${color('font-body')}`;
+    g.fillStyle = color(p.color);
+    const label = `${i + 1} ${p.label}`;
+    const note = p.note ?? '';
+    g.save();
+    g.beginPath();
+    g.rect(x0 + 6, y0, Math.max(0, x1 - x0 - 12), rowH);
+    g.clip();
+    g.fillText(label, x0 + 10, y0 + 15);
+    g.font = `11px ${color('font-data')}`;
+    const nw = g.measureText(note).width;
+    if (x1 - x0 > g.measureText(label).width + nw + 40) g.fillText(note, x1 - nw - 10, y0 + 15);
+    g.restore();
     g.globalAlpha = 1;
-    g.fillStyle = color('brass-ink');
-    g.font = `11px ${color('font-body')}`;
-    const text = p.label;
-    if (g.measureText(text).width < x1 - x0 - 8) g.fillText(text, x0 + 5, y + rowH / 2 + 4);
-    else {
-      g.fillStyle = color(p.color);
-      g.fillText(text, Math.min(x1 + 5, w - g.measureText(text).width - 4), y + rowH / 2 + 4);
-    }
+    return { index: i, x0, x1, y0, y1: y0 + rowH };
   });
+  // 나누는 점
+  let splitX = null;
+  if (split != null) {
+    splitX = Math.round(xOf(split)) + 0.5;
+    g.strokeStyle = color('fg');
+    g.setLineDash([3, 3]);
+    g.lineWidth = 1.5;
+    g.beginPath();
+    g.moveTo(splitX, rowsTop - 4);
+    g.lineTo(splitX, keyTop + keyH + 4);
+    g.stroke();
+    g.setLineDash([]);
+    const text = `나누는 점 ${NOTE_TEXT(split)}`;
+    g.font = `600 12px ${color('font-body')}`;
+    const tw = g.measureText(text).width + 20;
+    const tx = Math.max(pad, Math.min(w - pad - tw, splitX - tw / 2));
+    const ty = keyTop + keyH + 6;
+    g.fillStyle = color('key-white');
+    g.beginPath();
+    g.roundRect?.(tx, ty, tw, 20, 10);
+    if (!g.roundRect) g.rect(tx, ty, tw, 20);
+    g.fill();
+    g.fillStyle = color('brass-ink');
+    g.fillText(text, tx + 10, ty + 14);
+  }
+  const nearest = (x, edge) => {
+    let best = KEY_LO;
+    let d = Infinity;
+    for (let m = KEY_LO; m <= KEY_HI; m++) {
+      const e = Math.abs((edge === 'hi' ? xEnd(m) : xOf(m)) - x);
+      if (e < d) { d = e; best = m; }
+    }
+    return best;
+  };
+  return { rows, splitX, keyTop, nearest };
+}
+
+const NAMES12 = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+function NOTE_TEXT(m) {
+  return `${NAMES12[((m % 12) + 12) % 12]}${Math.floor(m / 12) - 1}`;
 }

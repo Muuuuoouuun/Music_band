@@ -262,3 +262,66 @@ export function demoBeat(sr = 44100, bpm = 90) {
   for (let i = 0; i < x.length; i++) x[i] = (x[i] / (peak || 1)) * 0.85;
   return { data: x, sr, bpm, name: '데모 비트 · 직접 합성한 붐뱁 90 BPM', length: Math.round(sr * beat * 4 * bars) };
 }
+
+// ---------------------------------------------------------------------------
+// 조각 이름 짐작: 패드에 '킥·스네어·햇' 같은 이름을 붙이려고. 새로 생긴 소리의 낮은음 비율과 밝기(미분 에너지),
+// 소리가 최고의 1/4 밑으로 줄 때까지 걸린 시간(울림)으로 고른다. 틀리면 패드 이름을 직접 고치면 된다.
+// ---------------------------------------------------------------------------
+
+export const KIND_LABELS = { kick: '킥', snare: '스네어', hat: '닫힌 햇', 'open-hat': '열린 햇', stab: '코드 스탭', bass: '베이스 음', perc: '타악', noise: '잡음' };
+
+export function guessKind(data, sr, start = 0, end = data.length) {
+  const n = Math.min(end, start + Math.round(sr * 1.2)) - start;
+  if (n < Math.round(sr * 0.005)) return { kind: 'perc', label: KIND_LABELS.perc };
+  // '새로 생긴' 소리로 본다: 시작 뒤 100ms 에서 시작 앞 40ms 를 뺀다 (앞 소리의 꼬리 빼기)
+  const post = Math.min(n, Math.round(sr * 0.1));
+  const pre = Math.min(start, Math.round(sr * 0.04));
+  const a = 1 - Math.exp((-2 * Math.PI * 150) / sr);
+  let lp = 0;
+  let back = start - pre > 0 ? data[start - pre - 1] : 0;
+  const e = { lowPre: 0, allPre: 0, difPre: 0, low: 0, all: 0, dif: 0 };
+  for (let i = -pre; i < post; i++) {
+    const x = data[start + i];
+    lp += (x - lp) * a;
+    const d = x - back;
+    back = x;
+    if (i < 0) { e.lowPre += lp * lp; e.allPre += x * x; e.difPre += d * d; } else { e.low += lp * lp; e.all += x * x; e.dif += d * d; }
+  }
+  const fresh = (k) => Math.max(0, e[k] / post - (pre ? e[`${k}Pre`] / pre : 0));
+  const allNew = Math.max(1e-12, fresh('all'));
+  const low = Math.min(1, fresh('low') / allNew);
+  // 밝기: 미분 에너지 / 에너지 → 대략의 주파수 (사인이면 그 주파수, 흰 잡음이면 약 10 kHz)
+  const zf = (sr / (2 * Math.PI)) * Math.sqrt(Math.min(4, fresh('dif') / allNew));
+  // 울림: 10ms 창 크기에서 앞 소리 꼬리만큼 빼고, 최고의 1/4 밑으로 줄 때까지
+  const floor = pre ? Math.sqrt(e.allPre / pre) : 0;
+  const win = Math.max(1, Math.round(sr * 0.01));
+  const env = [];
+  for (let i = 0; i < n; i += win) {
+    const m = Math.min(n, i + win);
+    let sum = 0;
+    for (let k = i; k < m; k++) sum += data[start + k] ** 2;
+    env.push(Math.max(0, Math.sqrt(sum / (m - i)) - floor));
+  }
+  const peak = Math.max(...env);
+  let last = 0;
+  env.forEach((r, i) => { if (r > peak * 0.25) last = i; });
+  const ring = ((last + 1) * win) / sr;
+  let kind;
+  if (low > 0.45) kind = ring < 0.6 ? 'kick' : 'bass';
+  else if (zf > 8500) kind = ring < 0.06 ? 'hat' : 'open-hat';
+  else if (zf > 1200) kind = ring < 0.5 ? 'snare' : 'noise';
+  else kind = ring > 0.2 ? 'stab' : 'perc';
+  return { kind, label: KIND_LABELS[kind], ring, low, zf };
+}
+
+/** 조각마다 이름 (같은 이름이 둘 이상이면 1, 2 … 를 붙인다) */
+export function nameSlices(data, sr, slices) {
+  const kinds = slices.map((s) => guessKind(data, sr, s.start, s.end));
+  const total = {};
+  for (const k of kinds) total[k.label] = (total[k.label] ?? 0) + 1;
+  const seen = {};
+  return kinds.map((k) => {
+    seen[k.label] = (seen[k.label] ?? 0) + 1;
+    return { kind: k.kind, label: total[k.label] > 1 ? `${k.label} ${seen[k.label]}` : k.label };
+  });
+}

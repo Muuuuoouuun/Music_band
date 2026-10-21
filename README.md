@@ -6,7 +6,7 @@
 |---|---|---|---|
 | **band2sheet · 악보 스튜디오** | 영상·음원·링크를 악기별 악보로 변환하고 코드·가사·음표 편집 | [apps/band2sheet](apps/band2sheet/README.md) | `http://127.0.0.1:8765` |
 | **AirChoir · 허밍 합창단** | 목소리 화음, 손동작 지휘, 녹음한 오브 반복 재생 (Phase 2) | [apps/airchoir](apps/airchoir/README.md) · [계획](apps/airchoir/PLAN.md) | `http://localhost:8000` |
-| **음색 공방 · Soundsmith** (목업) | 예배 무대(세트 리스트·음색 패드·밝기×공간 판·전환 효과음·드론·로터리), 실험실(음색 42개·오르간 드로바·그랜드 피아노 샘플·겹치기·나누기·배음 그리기), 톤 맞추기, 샘플 패드(자르기·16패드·스텝 시퀀서·로파이), 반주 만들기, 샘플 루프 지점·SFZ 내보내기, 4트랙 루퍼, 기준음·음률 | [apps/soundsmith](apps/soundsmith/README.md) · [조사](docs/SYNTH_APP_RESEARCH.md) | `http://localhost:8010` |
+| **음색 공방 · Soundsmith** (목업) | 예배 무대(세트 리스트·음색 패드·밝기×공간 판·전환 효과음·드론·로터리), 실험실(음색 42개·오르간 드로바·로터리·그랜드 피아노 샘플·하이브리드 겹치기·나누기·배음 그리기), 톤 맞추기, 샘플 패드(자르기·이름 짐작·16패드·1·2마디 스텝 시퀀서·로파이), 반주 만들기(섹션·보이싱 이유·band2sheet 코드 불러오기), 샘플 루프 지점·SFZ 내보내기, 4트랙 루퍼, 기준음·음률 | [apps/soundsmith](apps/soundsmith/README.md) · [조사](docs/SYNTH_APP_RESEARCH.md) | `http://localhost:8010` |
 
 ## band2sheet 시작
 

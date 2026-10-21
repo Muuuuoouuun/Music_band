@@ -235,12 +235,15 @@ export function makeLofi(ctx) {
     input,
     output,
     oscillators: [wow, flutter, noise],
+    /** fx.lofi = 전체 낡은 정도(소리 색). 샘플 패드는 바이닐 잡음(fx.noise)·테이프 흔들림(fx.wobble)을 따로 준다 */
     set(fx, now) {
-      amount = fx.lofi;
-      smooth(hp.frequency, 20 + 160 * amount, now);
-      smooth(lp.frequency, 16000 * (3500 / 16000) ** amount, now);
-      smooth(wowDepth.gain, 0.0016 * amount, now);
-      smooth(flutterDepth.gain, 0.00018 * amount, now);
+      const color = fx.lofi ?? 0;
+      const wob = fx.wobble ?? color;
+      amount = fx.noise ?? color;
+      smooth(hp.frequency, 20 + 160 * color, now);
+      smooth(lp.frequency, 16000 * (3500 / 16000) ** color, now);
+      smooth(wowDepth.gain, 0.0016 * wob, now);
+      smooth(flutterDepth.gain, 0.00018 * wob, now);
     },
     /** 연주 중일 때만 잡음이 들리게 (악기가 소리 날 때 열고, 다 끝나면 천천히 닫는다) */
     gate(open, when) {

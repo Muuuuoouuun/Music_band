@@ -5,7 +5,8 @@ import { makeBits, makeLofi } from './fx.js';
 import { holdDecimate } from './chop.js';
 
 export const PAD_COUNT = 16;
-export const STEPS = 16;
+export const STEPS = 16; // 한 마디 = 16분 16칸
+export const MAX_BARS = 2;
 export const CHOKES = [
   { id: 0, label: '없음' },
   { id: 1, label: 'A' },
@@ -14,9 +15,12 @@ export const CHOKES = [
 ];
 // 옛 샘플러 느낌의 샘플레이트 (44.1 kHz 를 몇 칸씩 잡아 둘지)
 export const RATES = [
-  { id: 44100, label: '44.1k', factor: 1 },
-  { id: 26040, label: '26k (SP-1200)', factor: 44100 / 26040 },
-  { id: 12000, label: '12k', factor: 44100 / 12000 },
+  { id: 8000, label: '8 kHz', factor: 44100 / 8000 },
+  { id: 12000, label: '12 kHz', factor: 44100 / 12000 },
+  { id: 22050, label: '22 kHz', factor: 2 },
+  { id: 26040, label: '26 kHz (SP-1200)', factor: 44100 / 26040 },
+  { id: 32000, label: '32 kHz', factor: 44100 / 32000 },
+  { id: 44100, label: '44.1 kHz', factor: 1 },
 ];
 
 /** 컴퓨터 건반 A W S E … 가 C4(60)부터라 패드 1 = C4 */
@@ -53,6 +57,11 @@ export function replayPattern(pads, sr, bpm) {
   return steps;
 }
 
+/** 한 마디 패턴을 bars 마디로 늘린다 (뒤 마디는 앞 마디를 그대로 베낀다) */
+export function toBars(steps, bars = MAX_BARS) {
+  return steps.map((row) => Array.from({ length: STEPS * bars }, (_, s) => row[s % row.length] ?? 0));
+}
+
 /** 스윙: 16분 둘씩 묶어 두 번째를 늦춘다. swing 0.5 = 곧게, 0.66 ≈ 셋잇단 느낌. 돌려주는 값은 박 단위. */
 export function stepBeat(step, swing) {
   const pair = Math.floor(step / 2);
@@ -77,7 +86,7 @@ export class PadKit {
     this.source = null;
     this.reversed = null;
     this.pads = [];
-    this.fx = { bits: 16, lofi: 0, rate: 44100 };
+    this.fx = { bits: 16, lofi: 0, rate: 44100, noise: 0, wobble: 0 };
     this.setFx(this.fx);
   }
 
@@ -109,7 +118,7 @@ export class PadKit {
     this.fx = { ...this.fx, ...fx };
     const now = this.ctx.currentTime;
     this.bits.set({ bits: this.fx.bits }, now);
-    this.lofi.set({ lofi: this.fx.lofi }, now);
+    this.lofi.set({ lofi: this.fx.lofi, noise: this.fx.noise, wobble: this.fx.wobble }, now);
     if (this.source && this.bakedRate !== this.fx.rate) this._bake();
   }
 
@@ -192,20 +201,21 @@ export class PadKit {
   }
 }
 
-/** 패턴을 WAV 로 굽기: loops 바퀴만큼 (16분 STEPS 칸 = 1마디). 돌려주는 값은 AudioBuffer. */
-export async function renderPattern({ data, sr, pads, steps, fx, bpm, swing, loops = 2, tail = 1.5 }) {
+/** 패턴을 WAV 로 굽기: loops 바퀴만큼 (16분 STEPS 칸 = 1마디, length 칸 = 한 바퀴). 돌려주는 값은 AudioBuffer. */
+export async function renderPattern({ data, sr, pads, steps, fx, bpm, swing, loops = 2, length = STEPS, tail = 1.5 }) {
   const beatSec = 60 / bpm;
-  const barSec = beatSec * 4;
-  const ctx = new OfflineAudioContext(2, Math.round(44100 * (barSec * loops + tail)), 44100);
+  const loopSec = beatSec * 4 * (length / STEPS);
+  const ctx = new OfflineAudioContext(2, Math.round(44100 * (loopSec * loops + tail)), 44100);
   const kit = new PadKit(ctx, ctx.destination);
   kit.setFx(fx);
   kit.setSource(data, sr);
   kit.setPads(pads);
   for (let loop = 0; loop < loops; loop++) {
-    for (let s = 0; s < STEPS; s++) {
+    for (let s = 0; s < length; s++) {
+      const at = 0.01 + loop * loopSec + (Math.floor(s / STEPS) * 4 + stepBeat(s % STEPS, swing)) * beatSec;
       for (let p = 0; p < PAD_COUNT; p++) {
         const v = steps[p][s];
-        if (v) kit.trigger(p, 0.01 + loop * barSec + stepBeat(s, swing) * beatSec, v === 2 ? 1 : 0.7);
+        if (v) kit.trigger(p, at, v === 2 ? 1 : 0.7);
       }
     }
   }

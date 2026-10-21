@@ -2,6 +2,7 @@
 // 손가락으로 미는 판(가로 밝기 × 세로 공간), 패드 홀드, 로터리 빠르게, 다음 곡, 루퍼 한 줄,
 // 전환 효과음(다음 마디 첫 박에 맞춤)과 곡의 조로 깔리는 드론.
 import { h, nextId, knob } from './ui.js';
+import { fit, color } from './draw.js';
 import { applyMacro, CATEGORIES } from './patch.js';
 import { FACTORY, factoryById } from './presets.js';
 import { NOTE_NAMES } from './tuning.js';
@@ -70,6 +71,7 @@ export function StageView(root, app) {
     choose(entryFor(song.presetId));
     persist();
     render();
+    app.emit('song');
   }
   prevBtn.addEventListener('click', () => selectSong(st.current - 1));
   nextBtn.addEventListener('click', () => selectSong(st.current + 1));
@@ -132,27 +134,45 @@ export function StageView(root, app) {
   holdBtn.addEventListener('click', () => { app.keyboard.setHold(!app.keyboard.hold); render(); });
   const nextSoundBtn = h('button', { type: 'button', class: 'stage-btn big' }, '다음 곡 음색 ▶');
   nextSoundBtn.addEventListener('click', () => selectSong(st.current + 1));
-  // 로터리 스피커: 오르간(또는 로터리를 건 음색)일 때만 보인다. 건반의 모듈레이션 휠로도 바뀐다.
-  const rotaryBtn = h('button', { type: 'button', class: 'stage-btn big rotary-btn', 'aria-pressed': 'false', title: '레슬리 느림 ↔ 빠름 (건반 휠로도)' }, '로터리 빠르게');
+  // ---- 로터리 스피커 카드: 로터리를 건 음색(오르간 등)일 때만 켜진다. 건반의 모듈레이션 휠로도 바뀐다 ----
+  const rotaryBtn = h('button', { type: 'button', class: 'rotary-big rotary-card', 'aria-pressed': 'false', title: '레슬리 느림 ↔ 빠름 (건반 휠로도)' });
   rotaryBtn.addEventListener('click', () => app.setRotaryFast(!app.patch.fx.rotaryFast));
+  const rotaryNote = h('p', { class: 'panel-hint' });
 
   // ---- 전환 효과음 ----
   const fxCache = new Map();
   let syncBar = true;
-  let pendingFx = null;
-  const fxState = h('span', { class: 'fx-state', 'aria-live': 'polite' });
-  const syncBtn = h('button', { type: 'button', class: 'toggle small', 'aria-pressed': 'true', title: '루퍼가 돌고 있으면 다음 마디 첫 박에 맞춰요' }, '다음 마디 첫 박에 맞추기');
+  let scheduled = []; // [{ id, label, start, hit }] (오디오 시각)
+  const syncBtn = h('button', { type: 'button', class: 'sync-pill', 'aria-pressed': 'true' }, h('span', { class: 'led', 'aria-hidden': 'true' }), '다음 마디 첫 박에 맞추기');
   syncBtn.addEventListener('click', () => { syncBar = !syncBar; syncBtn.setAttribute('aria-pressed', String(syncBar)); });
-  const fxButtons = TRANSITIONS.map((tr) => {
-    const b = h('button', { type: 'button', class: 'stage-btn fx-btn', title: tr.hint, dataset: { fx: tr.id } }, tr.label);
+  const countdown = h('div', { class: 'countdown', 'aria-live': 'polite' });
+  const ICONS = {
+    riser: 'M2 22 L10 20 L14 21 L20 17 L24 19 L30 13 L34 16 L40 9 L44 12 L50 5 L54 9 L58 2',
+    down: 'M2 4 L8 7 L12 5 L18 11 L22 9 L28 15 L32 13 L38 18 L44 17 L50 21 L58 22',
+    impact: 'M2 13 L8 13 L9 1 L11 24 L14 4 L17 20 L21 8 L25 17 L30 11 L36 15 L44 12 L58 13',
+    reverse: 'M2 13 L12 13 L20 12 L28 14 L36 11 L42 15 L48 7 L52 19 L55 3 L57 23 L58 13',
+  };
+  const META = { riser: '2마디 · 올라감', down: '1마디 · 내려감', impact: '첫 박 · 쿵', reverse: '1마디 · 지금 음색으로' };
+  const fxCards = TRANSITIONS.map((tr) => {
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 60 26');
+    icon.setAttribute('class', `fx-icon fx-icon-${tr.id}`);
+    icon.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', ICONS[tr.id]);
+    icon.append(path);
+    const badge = h('span', { class: 'fx-badge', hidden: true }, '다음 마디에');
+    const b = h('button', { type: 'button', class: 'fx-card', title: tr.hint, dataset: { fx: tr.id } },
+      h('span', { class: 'fx-card-top' }, icon, badge), h('strong', {}, tr.label), h('span', { class: 'fx-meta' }, META[tr.id]));
     b.addEventListener('click', () => fireFx(tr.id));
-    return b;
+    return { b, badge, id: tr.id };
   });
+  const timeline = h('canvas', { class: 'fx-timeline', role: 'img', 'aria-label': '앞으로 4마디: 루퍼 위치와 예약된 전환 효과음' });
   const timing = () => {
     const info = app.looper.info();
     return { info, beatSec: info.clock.beatSec, beatsPerBar: info.clock.beatsPerBar };
   };
-  async function fxBuffer(id, beatSec, beatsPerBar) {
+  async function fxBuffer(id, beatSec) {
     const tr = TRANSITIONS.find((x) => x.id === id);
     const seconds = tr.beats * beatSec;
     const key = id === 'reverse' ? `${id}|${seconds.toFixed(3)}|${JSON.stringify(app.patch)}|${app.tuning.transpose}` : `${id}|${seconds.toFixed(3)}`;
@@ -165,7 +185,7 @@ export function StageView(root, app) {
               { tuning: app.tuning, library: app.studio.library, sample: app.engineSample, bpm: app.studio.bpm });
       fxCache.set(key, job);
     }
-    return { buffer: await fxCache.get(key), seconds, tr, beatsPerBar };
+    return { buffer: await fxCache.get(key), seconds, tr };
   }
   function playBuffer(buffer, when, level = 0.8) {
     const ctx = app.studio.ctx;
@@ -176,11 +196,12 @@ export function StageView(root, app) {
     src.connect(g).connect(app.studio.bus);
     src.start(Math.max(ctx.currentTime, when), Math.max(0, ctx.currentTime - when));
     src.onended = () => g.disconnect();
+    return src;
   }
   async function fireFx(id) {
     const ctx = await app.ensureAudio();
     const { info, beatSec, beatsPerBar } = timing();
-    const { buffer, seconds, tr } = await fxBuffer(id, beatSec, beatsPerBar);
+    const { buffer, seconds, tr } = await fxBuffer(id, beatSec);
     const now = ctx.currentTime;
     let start = now + 0.03;
     let hit = tr.endsOnBeat ? start + seconds : start;
@@ -189,42 +210,163 @@ export function StageView(root, app) {
       start = tr.endsOnBeat ? hit - seconds : hit;
     }
     playBuffer(buffer, start);
-    pendingFx = { label: tr.label, hit, beatSec };
+    scheduled.push({ id, label: tr.label, start, hit, end: tr.endsOnBeat ? hit : start + Math.max(seconds, beatSec) });
   }
-  /** 루퍼의 '후렴 앞 라이저'가 부르는 자리: 이 시각에 시작해 2마디 뒤 첫 박에서 끝난다 */
+  /** 루퍼의 '후렴 앞 라이저'와 반주 미리 듣기가 부르는 자리: 이 시각에 시작해 2마디 뒤 첫 박에서 끝난다. 돌려주는 함수로 취소 */
   async function playFxAt(id, when) {
-    const { beatSec, beatsPerBar } = timing();
-    const { buffer, seconds } = await fxBuffer(id, beatSec, beatsPerBar);
-    playBuffer(buffer, when);
-    pendingFx = { label: '후렴 앞 라이저', hit: when + seconds, beatSec };
+    const { beatSec } = timing();
+    const { buffer, seconds, tr } = await fxBuffer(id, beatSec);
+    const src = playBuffer(buffer, when);
+    const item = { id, label: `후렴 앞 ${tr.label}`, start: when, hit: when + seconds, end: when + seconds };
+    scheduled.push(item);
+    return () => {
+      try { src.stop(); } catch { /* 이미 멈춤 */ }
+      scheduled = scheduled.filter((x) => x !== item);
+    };
   }
-  function renderFxState() {
+  function renderFx() {
     const ctx = app.studio.ctx;
-    if (!pendingFx || !ctx) { fxState.textContent = ''; return; }
-    const left = (pendingFx.hit - ctx.currentTime) / pendingFx.beatSec;
-    if (left < -0.5) { pendingFx = null; fxState.textContent = ''; return; }
-    fxState.textContent = left > 0 ? `${pendingFx.label} · 첫 박까지 ${Math.ceil(left)}` : `${pendingFx.label} · 지금!`;
+    const now = ctx?.currentTime ?? 0;
+    scheduled = scheduled.filter((x) => x.end > now - 0.5);
+    const { info, beatSec, beatsPerBar } = timing();
+    const next = scheduled.filter((x) => x.hit > now).sort((a, b) => a.hit - b.hit)[0];
+    for (const c of fxCards) c.badge.hidden = !scheduled.some((x) => x.id === c.id && x.start > now);
+    if (next && ctx) {
+      const left = Math.ceil((next.hit - now) / beatSec);
+      const steps = [3, 2, 1].map((n) => h('span', { class: `cd-n${n === left ? ' on' : left < n ? ' past' : ''}` }, String(n)));
+      countdown.replaceChildren(h('span', { class: 'cd-label' }, `${next.label}${next.id === 'riser' || next.id === 'reverse' ? '까지' : ''}`),
+        ...steps.flatMap((x, i) => (i ? [h('span', { class: 'cd-dot' }, '·'), x] : [x])), h('span', { class: 'cd-unit' }, `박 · ${info.clock.bpm} BPM`));
+      countdown.classList.toggle('far', left > 3);
+      if (left > 3) countdown.querySelector('.cd-label').textContent = `${next.label} · ${left}박 남음`;
+    } else {
+      countdown.replaceChildren(h('span', { class: 'cd-label' }, info.playing ? '대기 중' : '루퍼 멈춤 · 누르면 바로'), h('span', { class: 'cd-unit' }, `${info.clock.bpm} BPM`));
+      countdown.classList.remove('far');
+    }
+    drawTimeline({ info, beatSec, beatsPerBar, now });
+  }
+  function drawTimeline({ info, beatSec, beatsPerBar, now }) {
+    if (timeline.closest('[hidden]')) return;
+    const { g, w, h: hh } = fit(timeline);
+    const pad = { l: 14, r: 14 };
+    const bars = 4;
+    const playing = info.playing && app.studio.ctx;
+    const beat = playing ? Math.max(0, (now - info.t0) / beatSec) : 0;
+    const firstBar = Math.floor(beat / beatsPerBar);
+    const b0 = firstBar * beatsPerBar;
+    const span = bars * beatsPerBar;
+    const xOf = (b) => pad.l + ((b - b0) / span) * (w - pad.l - pad.r);
+    g.font = `12px ${color('font-body')}`;
+    for (let k = 0; k <= bars; k++) {
+      const x = Math.round(xOf(b0 + k * beatsPerBar)) + 0.5;
+      g.strokeStyle = color(k === 0 ? 'line-strong' : 'line');
+      g.beginPath();
+      g.moveTo(x, 18);
+      g.lineTo(x, hh - 8);
+      g.stroke();
+      if (k < bars) {
+        g.fillStyle = color('muted');
+        g.fillText(`${((firstBar + k) % info.clock.bars) + 1}마디`, x + 4, 13);
+      }
+      for (let q = 1; k < bars && q < beatsPerBar; q++) {
+        const xb = Math.round(xOf(b0 + k * beatsPerBar + q)) + 0.5;
+        g.strokeStyle = color('grid');
+        g.beginPath();
+        g.moveTo(xb, 40);
+        g.lineTo(xb, hh - 8);
+        g.stroke();
+      }
+    }
+    // 루퍼 줄
+    const loopName = info.tracks.find((t) => t.notes.length && t.sound)?.sound.label;
+    g.fillStyle = color('signal-wash');
+    g.fillRect(xOf(b0), 22, w - pad.l - pad.r, 12);
+    g.fillStyle = color('signal');
+    g.font = `11px ${color('font-body')}`;
+    g.fillText(loopName ? `루퍼 · ${loopName}` : '루퍼', xOf(b0) + 6, 32);
+    // 예약된 효과음
+    const yTop = 46;
+    const yBot = hh - 12;
+    for (const x of scheduled) {
+      if (!playing) continue;
+      const sb = (x.start - info.t0) / beatSec;
+      const hb = (x.hit - info.t0) / beatSec;
+      const eb = (x.end - info.t0) / beatSec;
+      if (eb < b0 || sb > b0 + span) continue;
+      g.fillStyle = color('brass-wash');
+      g.strokeStyle = color('brass');
+      g.lineWidth = 2;
+      g.beginPath();
+      if (x.id === 'riser' || x.id === 'reverse') {
+        g.moveTo(xOf(sb), yBot);
+        g.lineTo(xOf(hb), yTop);
+        g.lineTo(xOf(hb), yBot);
+      } else if (x.id === 'down') {
+        g.moveTo(xOf(sb), yTop);
+        g.lineTo(xOf(eb), yBot);
+        g.lineTo(xOf(sb), yBot);
+      } else {
+        g.moveTo(xOf(hb), yTop);
+        g.lineTo(xOf(hb) + 10, yBot);
+        g.lineTo(xOf(hb) - 2, yBot);
+      }
+      g.closePath();
+      g.fill();
+      g.stroke();
+      g.fillStyle = color('brass-hi');
+      g.font = `12px ${color('font-body')}`;
+      g.fillText(x.label, Math.max(pad.l, xOf(sb) + 4), yTop + 14);
+    }
+    if (playing) {
+      const x = Math.round(xOf(beat)) + 0.5;
+      g.strokeStyle = color('signal');
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(x, 18);
+      g.lineTo(x, hh - 8);
+      g.stroke();
+      g.fillStyle = color('signal');
+      g.font = `12px ${color('font-data')}`;
+      const inLoop = beat % info.clock.beats;
+      g.fillText(`지금 ${Math.floor(inLoop / beatsPerBar) + 1}.${Math.floor(inLoop % beatsPerBar) + 1}`, Math.min(w - 70, x + 6), hh - 12);
+    } else {
+      g.fillStyle = color('faint');
+      g.font = `12px ${color('font-body')}`;
+      g.fillText('루퍼를 재생하면 마디에 맞춰 예약된 효과음이 보여요', pad.l + 6, hh / 2 + 10);
+    }
   }
 
   // ---- 드론: 곡의 조로 계속 깔리는 바닥 소리 ----
   let drone = null;
   let droneKey = null; // null = 곡의 조(조옮김)를 따라감
-  let droneLevel = 0.6;
+  const droneOpt = { level: 0.6, shimmer: 0.25, bright: 0.5, fifth: true, octave: true };
   const keyNow = () => droneKey ?? ((app.tuning.transpose % 12) + 12) % 12;
-  const droneBtn = h('button', { type: 'button', class: 'stage-btn drone-btn', 'aria-pressed': 'false' }, '드론');
+  const droneBtn = h('button', { type: 'button', class: 'sync-pill drone-btn', 'aria-pressed': 'false' });
+  const droneNote = h('span', { class: 'panel-hint' });
   const droneKeys = h('div', { class: 'drone-keys', role: 'group', 'aria-label': '드론 조' });
-  const droneVol = knob({
-    label: '드론 볼륨', min: 0, max: 1, value: droneLevel, size: 'sm', format: (v) => `${Math.round(v * 100)}%`,
-    onInput: (v) => { droneLevel = v; drone?.inst.setPatch(dronePatch()); }, onChange: (v) => { droneLevel = v; drone?.inst.setPatch(dronePatch()); },
-    defaultValue: () => 0.6,
+  const dKnob = (label, key, fmt, def) => knob({
+    label, min: 0, max: 1, value: droneOpt[key], size: 'sm', format: fmt,
+    onInput: (v) => { droneOpt[key] = v; drone?.inst.setPatch(dronePatch()); },
+    onChange: (v) => { droneOpt[key] = v; drone?.inst.setPatch(dronePatch()); },
+    defaultValue: () => def,
   });
-  const dronePatch = () => { const p = factoryById('drone-pad').patch; return { ...p, volume: p.volume * droneLevel }; };
+  const pct = (v) => `${Math.round(v * 100)}%`;
+  const droneVol = dKnob('드론 볼륨', 'level', pct, 0.6);
+  const droneShim = dKnob('시머', 'shimmer', pct, 0.25);
+  const droneBright = dKnob('밝기', 'bright', (v) => (v < 0.35 ? '어둡게' : v > 0.65 ? '밝게' : '보통'), 0.5);
+  const fifthBtn = h('button', { type: 'button', class: 'chip-btn' }, '5도 더하기');
+  const octBtn = h('button', { type: 'button', class: 'chip-btn' }, '옥타브 위 더하기');
+  fifthBtn.addEventListener('click', () => { droneOpt.fifth = !droneOpt.fifth; restartDrone(); renderDrone(); });
+  octBtn.addEventListener('click', () => { droneOpt.octave = !droneOpt.octave; restartDrone(); renderDrone(); });
+  const dronePatch = () => {
+    const p = factoryById('drone-pad').patch;
+    return { ...p, volume: p.volume * droneOpt.level, filter: { ...p.filter, cutoff: 500 * 2 ** (droneOpt.bright * 3) }, fx: { ...p.fx, shimmer: droneOpt.shimmer } };
+  };
   function startDrone() {
     const pc = keyNow();
     // 악기가 조옮김을 따로 더하므로, 들리는 음이 pc 가 되도록 건반 번호를 거꾸로 맞춘다
     const root = 36 + ((((pc - app.tuning.transpose) % 12) + 12) % 12);
     const inst = new Instrument(app.studio.env(), dronePatch());
-    const notes = [root, root + 7, root + 12];
+    const notes = [root, droneOpt.fifth ? root + 7 : null, droneOpt.octave ? root + 12 : null].filter((m) => m != null);
     for (const m of notes) inst.noteOn(m, 0.6);
     drone = { inst, pc };
   }
@@ -235,6 +377,7 @@ export function StageView(root, app) {
     setTimeout(() => inst.dispose(), 7000);
     drone = null;
   }
+  const restartDrone = () => { if (drone) { stopDrone(); startDrone(); } };
   droneBtn.addEventListener('click', async () => {
     if (drone) stopDrone();
     else {
@@ -244,11 +387,20 @@ export function StageView(root, app) {
     renderDrone();
   });
   function renderDrone() {
+    const songPc = ((app.tuning.transpose % 12) + 12) % 12;
     droneBtn.setAttribute('aria-pressed', String(Boolean(drone)));
-    droneBtn.textContent = drone ? `드론 ${NOTE_NAMES[drone.pc]} 끄기` : '드론 켜기';
+    droneBtn.replaceChildren(h('span', { class: 'led', 'aria-hidden': 'true' }), drone ? `드론 켜짐 · ${NOTE_NAMES[drone.pc]}` : '드론 켜기');
+    droneNote.textContent = droneKey == null
+      ? `곡 조옮김 ${signed(app.tuning.transpose)} 를 따라가요 (C 를 누르면 ${NOTE_NAMES[songPc]})`
+      : `${NOTE_NAMES[droneKey]} 로 고정 · 곡 조를 따라가려면 '곡 조'`;
     droneKeys.replaceChildren(
-      h('button', { type: 'button', class: 'chip-btn', 'aria-pressed': String(droneKey == null), onclick: () => setDroneKey(null) }, `곡 조 (${NOTE_NAMES[((app.tuning.transpose % 12) + 12) % 12]})`),
-      ...NOTE_NAMES.map((n, pc) => h('button', { type: 'button', class: 'chip-btn', 'aria-pressed': String(droneKey === pc), onclick: () => setDroneKey(pc) }, n)));
+      h('button', { type: 'button', class: 'drone-key is-song', 'aria-pressed': String(droneKey == null), onclick: () => setDroneKey(null) }, `곡 조 ${NOTE_NAMES[songPc]}`),
+      ...NOTE_NAMES.map((n, pc) => h('button', {
+        type: 'button', class: `drone-key${n.length > 1 ? ' black' : ''}`, 'aria-pressed': String(keyNow() === pc && (droneKey === pc || droneKey == null)),
+        onclick: () => setDroneKey(pc),
+      }, n)));
+    fifthBtn.setAttribute('aria-pressed', String(droneOpt.fifth));
+    octBtn.setAttribute('aria-pressed', String(droneOpt.octave));
   }
   function setDroneKey(pc) {
     droneKey = pc;
@@ -261,9 +413,17 @@ export function StageView(root, app) {
   });
   app.on('panic', () => { stopDrone(); renderDrone(); });
 
-  const fxStrip = h('section', { class: 'fx-strip', 'aria-label': '전환 효과음과 드론' },
-    h('div', { class: 'fx-row' }, h('span', { class: 'label' }, '전환'), ...fxButtons, syncBtn, fxState),
-    h('div', { class: 'fx-row' }, droneBtn, droneKeys, droneVol.el));
+  const fxStrip = h('section', { class: 'fx-panel', 'aria-label': '전환 효과음' },
+    h('div', { class: 'fx-head' }, h('h2', {}, '전환 · 드론'), h('p', { class: 'panel-hint' }, '손이 바쁠 때 한 번에 — 패드 바로 아래 늘 보이는 줄')),
+    h('div', { class: 'fx-sync-row' }, syncBtn, h('span', { class: 'panel-hint' }, '루퍼가 돌고 있을 때만 · 멈춰 있으면 바로 터짐'), countdown),
+    h('div', { class: 'fx-cards' }, ...fxCards.map((c) => c.b)),
+    timeline);
+  const dronePanel = h('section', { class: 'panel drone-panel', 'aria-label': '드론' },
+    h('header', { class: 'panel-head' }, h('h3', {}, '드론'), h('p', { class: 'panel-hint' }, '12키, 곡 조를 따라감')),
+    h('div', { class: 'drone-top' }, droneBtn, droneNote),
+    droneKeys,
+    h('div', { class: 'drone-ctl' }, droneVol.el, droneShim.el, droneBright.el, h('div', { class: 'drone-toggles' }, fifthBtn, octBtn)));
+  const rotaryPanel = h('section', { class: 'panel rotary-stage', 'aria-label': '오르간 로터리' }, rotaryBtn, rotaryNote);
 
   // ---- 루퍼 한 줄 ----
   const lPlay = h('button', { type: 'button', class: 'stage-btn strip-btn', 'aria-pressed': 'false' }, '▶ 재생');
@@ -281,7 +441,8 @@ export function StageView(root, app) {
       h('button', { type: 'button', class: 'stage-btn small', onclick: () => setLooperOpen(false) }, '한 줄로 접기 ▴')),
     looperSlot);
   const openBtn = h('button', { type: 'button', class: 'stage-btn small', onclick: () => setLooperOpen(true) }, '트랙 펼치기 ▾');
-  strip.append(openBtn);
+  const arrOpenBtn = h('button', { type: 'button', class: 'stage-btn small', onclick: () => { setLooperOpen(true); app.looper.openArranger(); } }, '반주 만들기');
+  strip.append(openBtn, arrOpenBtn);
   function setLooperOpen(on) {
     strip.hidden = on;
     looperWrap.hidden = !on;
@@ -299,17 +460,18 @@ export function StageView(root, app) {
     h('div', { class: 'stage-main' },
       h('section', { class: 'stage-pads', 'aria-label': '음색 패드' },
         h('div', { class: 'stage-head' }, h('h2', {}, '음색 패드 · 숫자 키 1–8'), editPadsBtn),
-        padsGrid,
-        fxStrip,
-        strip,
-        looperWrap),
+        padsGrid),
       h('aside', { class: 'stage-side', 'aria-label': '연주 조절' },
         h('div', { class: 'stage-head' }, h('h2', {}, '손가락으로 밀기'), xyRead),
         xyPad,
         h('div', { class: 'xy-ranges' },
           h('label', { for: xId }, '밝기'), xRange,
           h('label', { for: yId }, '공간'), yRange, centerBtn),
-        h('div', { class: 'stage-side-btns' }, holdBtn, nextSoundBtn, rotaryBtn))));
+        h('div', { class: 'stage-side-btns' }, holdBtn, nextSoundBtn))),
+    fxStrip,
+    h('div', { class: 'stage-lower' }, dronePanel, rotaryPanel),
+    strip,
+    looperWrap);
 
   // ---- 그리기 ----
   const presetOptions = (selected) => [
@@ -409,9 +571,15 @@ export function StageView(root, app) {
   }
 
   function renderRotary() {
-    rotaryBtn.hidden = !app.rotaryUsed;
-    rotaryBtn.setAttribute('aria-pressed', String(app.patch.fx.rotaryFast));
-    rotaryBtn.textContent = app.patch.fx.rotaryFast ? '로터리 빠름 ▸ 느리게' : '로터리 느림 ▸ 빠르게';
+    const used = app.rotaryUsed;
+    const fast = app.patch.fx.rotaryFast;
+    rotaryBtn.disabled = !used;
+    rotaryBtn.setAttribute('aria-pressed', String(used && fast));
+    rotaryBtn.replaceChildren(h('span', { class: 'rb-kicker' }, '오르간 로터리'), h('span', { class: 'rb-title' }, used ? (fast ? '빠름' : '느림') : '꺼짐'),
+      h('span', { class: 'led', 'aria-hidden': 'true' }));
+    rotaryNote.textContent = used
+      ? `${fast ? '한 번 더 누르면 천천히 느려져요' : '누르면 혼부터 빨라져요'}. 건반의 모듈레이션 휠(CC1)도 같은 스위치예요.`
+      : '지금 음색에 로터리 스피커가 없어요. 오르간 음색(가스펠 오르간 등)을 고르면 켜져요.';
   }
 
   function render() {
@@ -436,7 +604,7 @@ export function StageView(root, app) {
   app.on('presets', render);
   app.on('hold', () => holdBtn.setAttribute('aria-pressed', String(app.keyboard.hold)));
   app.on('show:stage', render);
-  app.onFrame(() => { if (!root.hidden) { renderStrip(); renderFxState(); } });
+  app.onFrame(() => { if (!root.hidden) { renderStrip(); renderFx(); } });
   window.addEventListener('keydown', (e) => {
     if (root.hidden || e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target) || e.repeat) return;
     const k = Number(e.key);
@@ -448,6 +616,7 @@ export function StageView(root, app) {
   return {
     render,
     selectSong,
+    currentSong: () => st.songs[st.current] ?? null,
     pads: st.pads,
     looperSlot,
     openLooper: () => setLooperOpen(true),

@@ -271,6 +271,7 @@ export class Instrument {
     // 겹친 음색들 (작은 악기) 과 그 악기들에 보낸 음
     this.parts = [];
     this.partHeld = new Map();
+    this.mainShift = new Map();
     // LFO 하나를 세 곳(음정·필터·볼륨)으로 나눠 보낸다. 흔드는 곳을 바꾸면 깊이만 옮겨진다.
     this.lfo = ctx.createOscillator();
     this.lfoTo = { pitch: gain(0), filter: gain(0), amp: gain(0) };
@@ -385,13 +386,19 @@ export class Instrument {
   noteOn(midi, velocity = 0.8, when = this.ctx.currentTime) {
     this.parts.forEach((part, i) => {
       const l = part.layer;
-      if (midi < l.lo || midi > l.hi) return;
+      if (l.on === false || midi < l.lo || midi > l.hi) return;
       const m = midi + 12 * l.octave;
       this.partHeld.set(`${i}:${midi}`, m);
       part.inst.noteOn(m, velocity, when);
     });
     const p = this.patch;
     if (midi < p.keys.lo || midi > p.keys.hi) return;
+    // 메인 음색도 옥타브를 옮길 수 있다 (건반 번호만 바꿔 연주; 놓을 때도 같은 번호로)
+    if (p.keys.octave) {
+      const m = midi + 12 * p.keys.octave;
+      this.mainShift.set(midi, m);
+      midi = m;
+    }
     this.blocks.lofi?.gate(true, when);
     if (p.mono) {
       this.monoStack = this.monoStack.filter((m) => m !== midi).concat(midi);
@@ -422,6 +429,11 @@ export class Instrument {
       part.inst.noteOff(this.partHeld.get(key), when);
       this.partHeld.delete(key);
     });
+    if (this.mainShift.has(midi)) {
+      const m = this.mainShift.get(midi);
+      this.mainShift.delete(midi);
+      midi = m;
+    }
     const v = this.held.get(midi);
     this.held.delete(midi);
     if (this.patch.mono) {
@@ -447,6 +459,7 @@ export class Instrument {
   allOff(when = this.ctx.currentTime, fast = false) {
     this.held.clear();
     this.partHeld.clear();
+    this.mainShift.clear();
     this.monoStack = [];
     for (const part of this.parts) part.inst.allOff(when, fast);
     for (const v of this.voices) this._release(v, when, fast ? 0.03 : undefined);
@@ -725,7 +738,8 @@ export class Instrument {
     for (const [src, at] of v.stops ?? []) src.stop(at);
     const life = v.sources[0];
     life.onended = () => {
-      for (const [from, to] of v.lfoLinks) from.disconnect(to);
+      // 악기를 치우는 중이면 이미 끊긴 연결일 수 있다
+      for (const [from, to] of v.lfoLinks) try { from.disconnect(to); } catch { /* 이미 끊김 */ }
       for (const n of v.nodes) n.disconnect();
       this.voices.delete(v);
     };

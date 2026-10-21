@@ -207,6 +207,7 @@ class App {
     this.studio.bpm = bpm;
     this.live?.syncTempo();
     this.emit('tempo');
+    this.renderHeader();
   }
 
   // ---- 샘플 ----
@@ -292,18 +293,27 @@ class App {
     try { history.replaceState(null, '', `#${id}`); } catch { /* 액자 안에서는 무시 */ }
     this.emit(`show:${id}`);
     this.emit('tab', { from, to: id });
+    this.renderHeader();
     if (legacy === 'sampler') this.lab.openSample();
     if (legacy === 'looper') this.stage.openLooper();
     if (legacy === 'tuning') this.tone.openPitch();
   }
 
   renderHeader() {
-    document.getElementById('now-patch').textContent = this.patch.source === 'sample' && this.sample ? `${this.patch.name} · 샘플 ${this.sample.name}` : this.patch.name;
     const t = this.tuning;
-    const parts = [`A4 ${t.a4}`, TEMPERAMENTS[t.temperament].label];
-    if (t.temperament !== 'equal') parts.push(`${NOTE_NAMES[t.root]} 기준`);
-    if (t.transpose) parts.push(`조옮김 ${t.transpose > 0 ? '+' : ''}${t.transpose}`);
-    document.getElementById('now-tuning').textContent = parts.join(' · ');
+    // 샘플 패드 화면에서는 지금 소리 = 잘라 놓은 소리, 칩 = 빠르기·스윙
+    const pads = this.tab === 'pads' ? this.pads?.info() : null;
+    if (pads?.name) {
+      document.getElementById('now-patch').textContent = `${pads.name.split(' · ')[0]} · ${pads.slices}조각`;
+      document.getElementById('now-tuning').textContent = `${this.studio.bpm} BPM · 스윙 ${Math.round(pads.swing * 100)}%`;
+    } else {
+      document.getElementById('now-patch').textContent = this.patch.source === 'sample' && this.sample ? `${this.patch.name} · 샘플 ${this.sample.name}` : this.patch.name;
+      const parts = [`A4 ${t.a4}`, TEMPERAMENTS[t.temperament].label];
+      if (t.temperament !== 'equal') parts.push(`${NOTE_NAMES[t.root]} 기준`);
+      if (t.transpose) parts.push(`조옮김 ${t.transpose > 0 ? '+' : ''}${t.transpose}`);
+      parts.push(`${this.studio.bpm} BPM`);
+      document.getElementById('now-tuning').textContent = parts.join(' · ');
+    }
     const on = this.studio.running;
     const power = document.getElementById('power');
     power.setAttribute('aria-pressed', String(on));

@@ -366,7 +366,9 @@ const META = {
 
 export const FACTORY = RAW.map((p) => {
   const [id, desc, uses] = META[p.name];
-  return { id, factory: true, desc, uses, patch: normalizePatch(p) };
+  // 겹친 음색이 어느 기본 음색에서 왔는지 (화면에서 설명·고르기에 씀)
+  const layers = (p.layers ?? []).map((l) => ({ ...l, preset: l.preset ?? META[l.patch.name]?.[0] ?? null }));
+  return { id, factory: true, desc, uses, patch: normalizePatch({ ...p, layers }) };
 });
 
 export const factoryById = (id) => FACTORY.find((f) => f.id === id) ?? null;

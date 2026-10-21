@@ -177,6 +177,7 @@ export const PARAMS = {
   // 메인 음색이 소리 나는 건반 범위 (나누기)
   'keys.lo': int('낮은 음', 'note', 0, 127),
   'keys.hi': int('높은 음', 'note', 0, 127),
+  'keys.octave': int('옥타브', 'oct', -2, 2),
 };
 
 // 프리셋이 비워 둔 값은 이 '담백한' 소리로 채운다.
@@ -206,7 +207,7 @@ export const BASE_PATCH = {
   glide: 0,
   mono: false,
   volume: 0.8,
-  keys: { lo: 0, hi: 127 },
+  keys: { lo: 0, hi: 127, octave: 0 },
   custom: harmonicsOf('choir'),
   layers: [],
 };
@@ -262,6 +263,7 @@ const clampNum = (v, lo, hi, fallback, step = 0) => {
 export function normalizeLayer(l = {}) {
   return {
     preset: typeof l.preset === 'string' ? l.preset.slice(0, 40) : null,
+    on: l.on !== false,
     level: clampNum(l.level, 0, 1, 0.7),
     octave: clampNum(l.octave, -2, 2, 0, 1),
     lo: clampNum(l.lo, 0, 127, 0, 1),

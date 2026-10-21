@@ -17,7 +17,9 @@ test('겹치기: 최대 2개, 범위·옥타브·세기를 자르고, 겹친 음
     ],
   });
   assert.equal(p.layers.length, MAX_LAYERS);
-  assert.deepEqual(p.keys, { lo: 60, hi: 127 });
+  assert.deepEqual(p.keys, { lo: 60, hi: 127, octave: 0 });
+  assert.equal(p.layers[0].on, true);
+  assert.equal(normalizeLayer({ on: false }).on, false);
   const [a, b] = p.layers;
   assert.equal(a.level, 1);
   assert.equal(a.octave, 2);
