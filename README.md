@@ -6,6 +6,7 @@
 |---|---|---|---|
 | **band2sheet · 악보 스튜디오** | 영상·음원·링크를 악기별 악보로 변환하고 코드·가사·음표 편집 | [apps/band2sheet](apps/band2sheet/README.md) | `http://127.0.0.1:8765` |
 | **AirChoir · 허밍 합창단** | 목소리 화음, 손동작 지휘, 녹음한 오브 반복 재생 (Phase 2) | [apps/airchoir](apps/airchoir/README.md) · [계획](apps/airchoir/PLAN.md) | `http://localhost:8000` |
+| **음색 공방 · Soundsmith** (목업) | 예배 무대(세트 리스트·음색 패드·밝기×공간 판), 실험실(쓰임새별 음색·도우미 슬라이더·배음 그리기), 톤 맞추기(대역 6개 밝기 균형·톤 곡선·말 버튼·레퍼런스 따라가기), 샘플 루프 지점·SFZ 내보내기, 4트랙 루퍼, 기준음·음률 | [apps/soundsmith](apps/soundsmith/README.md) · [조사](docs/SYNTH_APP_RESEARCH.md) | `http://localhost:8010` |
 
 ## band2sheet 시작
 
@@ -33,6 +34,17 @@ npm start
 
 Node와 Python 3가 필요하며 앱 실행 자체에 npm 설치는 필요하지 않습니다. **데모로 시작**은 권한 요청 없이 합성 데모와 마우스·키보드 모드로 시작합니다. 카메라 모드는 MediaPipe를 외부에서 받아오며, 마이크·카메라 사용에는 브라우저 권한이 필요합니다. 녹음 오브는 브라우저 메모리에 있고 세션을 종료하거나 페이지를 닫으면 사라집니다. band2sheet 데이터와 공유되지 않습니다.
 
+## 음색 공방 시작
+
+저장소 루트에서:
+
+```bash
+cd apps/soundsmith
+npm start
+```
+
+설치할 패키지가 없습니다. Python 3(정적 서버)과 브라우저만 있으면 됩니다. 샘플과 루퍼 녹음은 페이지 메모리에만 있습니다.
+
 ## 개발과 검증
 
 각 명령은 해당 앱 폴더에서 실행합니다.
@@ -44,10 +56,12 @@ Node와 Python 3가 필요하며 앱 실행 자체에 npm 설치는 필요하지
 | band2sheet 로컬 파일 처리 | `.venv/bin/python -m pytest tests/test_fetch.py -k 'not app'` | pytest, yt-dlp, ffmpeg; 합성 MP4와 localhost만 사용 |
 | band2sheet 전체 | `.venv/bin/python -m pytest` | 전체 기본 의존성, 선택 엔진 설치 상태에 따라 범위 달라짐 |
 | AirChoir 단위 검사 | `npm test` | Node, 실제 장치 없이 실행 |
+| 음색 공방 단위 검사 | `npm test` | Node, 브라우저 없이 실행 |
+| 음색 공방 브라우저 검사 | `npm run check` | `npm start` 서버, 설치된 Playwright·Chromium |
 
 AirChoir 브라우저 검사에는 추가 도구가 필요합니다. 자동 모델 다운로드 여부와 선택 실행법은 [앱 테스트 안내](apps/airchoir/README.md#테스트)를 먼저 확인하세요. 자동 테스트의 상태·출력 검증과 실제 음원의 채보·화음 품질 평가는 구분합니다.
 
-화면의 정보 구조와 조작 상태를 개선한 근거는 [UI 개선과 공식 레퍼런스](docs/UI_REFINEMENT.md), 실행 범위와 한계는 [검증 기록](docs/VALIDATION.md)에 정리합니다.
+화면의 정보 구조와 조작 상태를 개선한 근거는 [UI 개선과 공식 레퍼런스](docs/UI_REFINEMENT.md), 실행 범위와 한계는 [검증 기록](docs/VALIDATION.md)에 정리합니다. 새 앱 구상(우리 신스·가상악기·음색 만들기)과 무료·오픈소스 부품 조사는 [음색 앱 조사](docs/SYNTH_APP_RESEARCH.md)에 있습니다.
 
 ## 폴더와 이전 작업
 
@@ -55,6 +69,7 @@ AirChoir 브라우저 검사에는 추가 도구가 필요합니다. 자동 모�
 apps/
   band2sheet/  # Python 패키지 band2sheet/, tests/, docs/, pyproject.toml
   airchoir/    # 브라우저 ES 모듈 src/, core/, phase0/, test/, package.json
+  soundsmith/  # 브라우저 ES 모듈 src/, test/, package.json (목업)
 docs/         # 통합 출처와 검증 기록
 scripts/      # 두 앱의 이동 대응 검사
 ```
