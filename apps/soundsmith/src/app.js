@@ -5,6 +5,7 @@ import { normalizePatch, setPath } from './patch.js';
 import { FACTORY, factoryById } from './presets.js';
 import { makeTuner, normalizeTuning, noteName, TEMPERAMENTS, NOTE_NAMES } from './tuning.js';
 import { bakeSample } from './sample.js';
+import { Library } from './library.js';
 import { Keyboard } from './keyboard.js';
 import { drawScope } from './draw.js';
 import * as store from './store.js';
@@ -13,8 +14,12 @@ import { LabView } from './view-lab.js';
 import { SamplerView } from './view-sampler.js';
 import { LooperView } from './view-looper.js';
 import { ToneView } from './view-tone.js';
+import { PadsView } from './view-pads.js';
 
-const TABS = ['stage', 'lab', 'tone'];
+const TABS = ['stage', 'lab', 'tone', 'pads'];
+
+/** 이 음색(겹친 음색 포함)이 피아노 샘플을 쓰는지 */
+export const usesPiano = (p) => p.source === 'piano' || (p.layers ?? []).some((l) => l.patch.source === 'piano');
 
 class App {
   constructor() {
@@ -32,6 +37,12 @@ class App {
       .map((x) => ({ id: x.id, patch: normalizePatch(x.patch) }));
     this.tuning = normalizeTuning(store.load('tuning', {}));
     this.studio.tuner = makeTuner(this.tuning);
+    // 샘플 악기(그랜드 피아노)는 처음 쓸 때 받는다. 푸는 일은 소리 켜기와 상관없이 따로 한다.
+    let decoder = null;
+    this.studio.library = new Library({
+      decode: (buf) => (decoder ??= new OfflineAudioContext(2, 1, 44100)).decodeAudioData(buf),
+      onProgress: (id, prog) => this.emit('library', { id, ...prog }),
+    });
     this.sample = null;
     this.bakedSample = null;
     this.engineSample = null;
@@ -77,6 +88,7 @@ class App {
   setPatch(patch, { phase = 'change', presetId, keepMacros = false } = {}) {
     if (presetId !== undefined) this.presetId = presetId;
     this.patch = patch;
+    if (usesPiano(patch)) this.studio.library.load('grand').catch(() => {});
     if (phase === 'change' && JSON.stringify(this.committed) !== JSON.stringify(patch)) {
       this.history.push({ patch: this.committed, presetId: this.committedPresetId });
       if (this.history.length > 60) this.history.shift();
@@ -91,6 +103,19 @@ class App {
 
   setParam(path, value, phase = 'change') {
     this.setPatch(setPath(this.patch, path, value), { phase, keepMacros: true });
+  }
+
+  /** 지금 음색(겹친 음색 포함)에 로터리 스피커가 걸려 있는지 */
+  get rotaryUsed() {
+    return this.patch.fx.rotary > 0.001 || this.patch.layers.some((l) => l.patch.fx.rotary > 0.001);
+  }
+
+  /** 로터리 느림·빠름 (무대 버튼·모듈레이션 휠). 겹친 음색에도 같이. */
+  setRotaryFast(on) {
+    const p = structuredClone(this.patch);
+    p.fx.rotaryFast = on;
+    for (const l of p.layers) l.patch.fx.rotaryFast = on;
+    this.setPatch(p, { phase: 'change', keepMacros: true });
   }
 
   undo() {
@@ -259,12 +284,14 @@ class App {
     if (id === 'looper') id = 'stage';
     if (id === 'tuning') id = 'tone';
     if (!TABS.includes(id)) id = 'stage';
+    const from = this.tab;
     this.tab = id;
     document.body.dataset.tab = id;
     for (const b of document.querySelectorAll('.tab')) b.setAttribute('aria-current', String(b.dataset.tab === id));
     for (const v of document.querySelectorAll('.view')) v.hidden = v.dataset.view !== id;
     try { history.replaceState(null, '', `#${id}`); } catch { /* 액자 안에서는 무시 */ }
     this.emit(`show:${id}`);
+    this.emit('tab', { from, to: id });
     if (legacy === 'sampler') this.lab.openSample();
     if (legacy === 'looper') this.stage.openLooper();
     if (legacy === 'tuning') this.tone.openPitch();
@@ -286,17 +313,28 @@ class App {
 
 const app = new App();
 window.soundsmith = app; // 브라우저 검사용
+if (usesPiano(app.patch)) app.studio.library.load('grand').catch(() => {});
+app.on('library', ({ done, total, error }) => {
+  if (error) app.notice('피아노 소리를 받지 못했어요. 인터넷 연결을 확인하고 다시 골라 보세요.', 'bad');
+  else if (done === total) app.notice('그랜드 피아노 소리를 다 받았어요 (Salamander Grand Piano, CC-BY 3.0).', 'good');
+  else if (done === 1) app.notice(`그랜드 피아노 소리를 받는 중이에요 (${total}개 샘플, 약 6 MB). 다 받으면 바로 소리가 나요.`);
+});
 
 app.lab = LabView(document.getElementById('view-lab'), app);
 SamplerView(app.lab.sampleSlot, app);
 app.stage = StageView(document.getElementById('view-stage'), app);
 app.looper = LooperView(app.stage.looperSlot, app);
 app.tone = ToneView(document.getElementById('view-tone'), app);
+app.pads = PadsView(document.getElementById('view-pads'), app);
 app.keyboard = new Keyboard(document.getElementById('dock'), {
   noteOn: (m, v) => app.noteOn(m, v),
   noteOff: (m) => app.noteOff(m),
   sustain: (on) => app.sustain(on),
   describe: (m, v) => app.describe(m, v),
+  mod: (v) => {
+    const fast = v > 0.5;
+    if (app.rotaryUsed && fast !== app.patch.fx.rotaryFast) app.setRotaryFast(fast);
+  },
 });
 
 for (const b of document.querySelectorAll('.tab')) b.addEventListener('click', () => app.showTab(b.dataset.tab));

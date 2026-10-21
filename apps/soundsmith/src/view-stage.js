@@ -1,9 +1,13 @@
 // 예배 무대: 연주 중에 음색을 바꾸는 화면. 세트 리스트, 큰 음색 패드 8개(숫자 키 1–8),
-// 손가락으로 미는 판(가로 밝기 × 세로 공간), 패드 홀드, 다음 곡, 루퍼 한 줄.
-import { h, nextId } from './ui.js';
+// 손가락으로 미는 판(가로 밝기 × 세로 공간), 패드 홀드, 로터리 빠르게, 다음 곡, 루퍼 한 줄,
+// 전환 효과음(다음 마디 첫 박에 맞춤)과 곡의 조로 깔리는 드론.
+import { h, nextId, knob } from './ui.js';
 import { applyMacro, CATEGORIES } from './patch.js';
-import { FACTORY } from './presets.js';
+import { FACTORY, factoryById } from './presets.js';
 import { NOTE_NAMES } from './tuning.js';
+import { Instrument } from './engine.js';
+import { TRANSITIONS, renderRiser, renderDownlifter, renderImpact, renderReverseSwell, nextDownbeat } from './fxgen.js';
+import { chordFor } from './view-tone.js';
 import * as store from './store.js';
 
 const DEFAULT_PADS = ['worship-pad', 'air-pad', 'swell-strings', 'dx-ep', 'church-organ', 'glass-bell-pad', 'synth-bass', 'acoustic-guitar'];
@@ -128,6 +132,138 @@ export function StageView(root, app) {
   holdBtn.addEventListener('click', () => { app.keyboard.setHold(!app.keyboard.hold); render(); });
   const nextSoundBtn = h('button', { type: 'button', class: 'stage-btn big' }, '다음 곡 음색 ▶');
   nextSoundBtn.addEventListener('click', () => selectSong(st.current + 1));
+  // 로터리 스피커: 오르간(또는 로터리를 건 음색)일 때만 보인다. 건반의 모듈레이션 휠로도 바뀐다.
+  const rotaryBtn = h('button', { type: 'button', class: 'stage-btn big rotary-btn', 'aria-pressed': 'false', title: '레슬리 느림 ↔ 빠름 (건반 휠로도)' }, '로터리 빠르게');
+  rotaryBtn.addEventListener('click', () => app.setRotaryFast(!app.patch.fx.rotaryFast));
+
+  // ---- 전환 효과음 ----
+  const fxCache = new Map();
+  let syncBar = true;
+  let pendingFx = null;
+  const fxState = h('span', { class: 'fx-state', 'aria-live': 'polite' });
+  const syncBtn = h('button', { type: 'button', class: 'toggle small', 'aria-pressed': 'true', title: '루퍼가 돌고 있으면 다음 마디 첫 박에 맞춰요' }, '다음 마디 첫 박에 맞추기');
+  syncBtn.addEventListener('click', () => { syncBar = !syncBar; syncBtn.setAttribute('aria-pressed', String(syncBar)); });
+  const fxButtons = TRANSITIONS.map((tr) => {
+    const b = h('button', { type: 'button', class: 'stage-btn fx-btn', title: tr.hint, dataset: { fx: tr.id } }, tr.label);
+    b.addEventListener('click', () => fireFx(tr.id));
+    return b;
+  });
+  const timing = () => {
+    const info = app.looper.info();
+    return { info, beatSec: info.clock.beatSec, beatsPerBar: info.clock.beatsPerBar };
+  };
+  async function fxBuffer(id, beatSec, beatsPerBar) {
+    const tr = TRANSITIONS.find((x) => x.id === id);
+    const seconds = tr.beats * beatSec;
+    const key = id === 'reverse' ? `${id}|${seconds.toFixed(3)}|${JSON.stringify(app.patch)}|${app.tuning.transpose}` : `${id}|${seconds.toFixed(3)}`;
+    if (!fxCache.has(key)) {
+      if (fxCache.size > 12) fxCache.delete(fxCache.keys().next().value);
+      const job = id === 'riser' ? renderRiser(seconds)
+        : id === 'down' ? renderDownlifter(seconds)
+          : id === 'impact' ? renderImpact()
+            : renderReverseSwell(app.patch.source === 'sample' && !app.engineSample ? factoryById('worship-pad').patch : app.patch, chordFor(app.patch), seconds,
+              { tuning: app.tuning, library: app.studio.library, sample: app.engineSample, bpm: app.studio.bpm });
+      fxCache.set(key, job);
+    }
+    return { buffer: await fxCache.get(key), seconds, tr, beatsPerBar };
+  }
+  function playBuffer(buffer, when, level = 0.8) {
+    const ctx = app.studio.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const g = ctx.createGain();
+    g.gain.value = level;
+    src.connect(g).connect(app.studio.bus);
+    src.start(Math.max(ctx.currentTime, when), Math.max(0, ctx.currentTime - when));
+    src.onended = () => g.disconnect();
+  }
+  async function fireFx(id) {
+    const ctx = await app.ensureAudio();
+    const { info, beatSec, beatsPerBar } = timing();
+    const { buffer, seconds, tr } = await fxBuffer(id, beatSec, beatsPerBar);
+    const now = ctx.currentTime;
+    let start = now + 0.03;
+    let hit = tr.endsOnBeat ? start + seconds : start;
+    if (syncBar && info.playing) {
+      hit = nextDownbeat({ now, t0: info.t0, beatSec, beatsPerBar }, tr.endsOnBeat ? seconds : 0);
+      start = tr.endsOnBeat ? hit - seconds : hit;
+    }
+    playBuffer(buffer, start);
+    pendingFx = { label: tr.label, hit, beatSec };
+  }
+  /** 루퍼의 '후렴 앞 라이저'가 부르는 자리: 이 시각에 시작해 2마디 뒤 첫 박에서 끝난다 */
+  async function playFxAt(id, when) {
+    const { beatSec, beatsPerBar } = timing();
+    const { buffer, seconds } = await fxBuffer(id, beatSec, beatsPerBar);
+    playBuffer(buffer, when);
+    pendingFx = { label: '후렴 앞 라이저', hit: when + seconds, beatSec };
+  }
+  function renderFxState() {
+    const ctx = app.studio.ctx;
+    if (!pendingFx || !ctx) { fxState.textContent = ''; return; }
+    const left = (pendingFx.hit - ctx.currentTime) / pendingFx.beatSec;
+    if (left < -0.5) { pendingFx = null; fxState.textContent = ''; return; }
+    fxState.textContent = left > 0 ? `${pendingFx.label} · 첫 박까지 ${Math.ceil(left)}` : `${pendingFx.label} · 지금!`;
+  }
+
+  // ---- 드론: 곡의 조로 계속 깔리는 바닥 소리 ----
+  let drone = null;
+  let droneKey = null; // null = 곡의 조(조옮김)를 따라감
+  let droneLevel = 0.6;
+  const keyNow = () => droneKey ?? ((app.tuning.transpose % 12) + 12) % 12;
+  const droneBtn = h('button', { type: 'button', class: 'stage-btn drone-btn', 'aria-pressed': 'false' }, '드론');
+  const droneKeys = h('div', { class: 'drone-keys', role: 'group', 'aria-label': '드론 조' });
+  const droneVol = knob({
+    label: '드론 볼륨', min: 0, max: 1, value: droneLevel, size: 'sm', format: (v) => `${Math.round(v * 100)}%`,
+    onInput: (v) => { droneLevel = v; drone?.inst.setPatch(dronePatch()); }, onChange: (v) => { droneLevel = v; drone?.inst.setPatch(dronePatch()); },
+    defaultValue: () => 0.6,
+  });
+  const dronePatch = () => { const p = factoryById('drone-pad').patch; return { ...p, volume: p.volume * droneLevel }; };
+  function startDrone() {
+    const pc = keyNow();
+    // 악기가 조옮김을 따로 더하므로, 들리는 음이 pc 가 되도록 건반 번호를 거꾸로 맞춘다
+    const root = 36 + ((((pc - app.tuning.transpose) % 12) + 12) % 12);
+    const inst = new Instrument(app.studio.env(), dronePatch());
+    const notes = [root, root + 7, root + 12];
+    for (const m of notes) inst.noteOn(m, 0.6);
+    drone = { inst, pc };
+  }
+  function stopDrone() {
+    if (!drone) return;
+    const { inst } = drone;
+    inst.allOff();
+    setTimeout(() => inst.dispose(), 7000);
+    drone = null;
+  }
+  droneBtn.addEventListener('click', async () => {
+    if (drone) stopDrone();
+    else {
+      await app.ensureAudio();
+      startDrone();
+    }
+    renderDrone();
+  });
+  function renderDrone() {
+    droneBtn.setAttribute('aria-pressed', String(Boolean(drone)));
+    droneBtn.textContent = drone ? `드론 ${NOTE_NAMES[drone.pc]} 끄기` : '드론 켜기';
+    droneKeys.replaceChildren(
+      h('button', { type: 'button', class: 'chip-btn', 'aria-pressed': String(droneKey == null), onclick: () => setDroneKey(null) }, `곡 조 (${NOTE_NAMES[((app.tuning.transpose % 12) + 12) % 12]})`),
+      ...NOTE_NAMES.map((n, pc) => h('button', { type: 'button', class: 'chip-btn', 'aria-pressed': String(droneKey === pc), onclick: () => setDroneKey(pc) }, n)));
+  }
+  function setDroneKey(pc) {
+    droneKey = pc;
+    if (drone && drone.pc !== keyNow()) { stopDrone(); startDrone(); }
+    renderDrone();
+  }
+  app.on('tuning', () => {
+    if (drone && droneKey == null && drone.pc !== keyNow()) { stopDrone(); startDrone(); }
+    if (!root.hidden) renderDrone();
+  });
+  app.on('panic', () => { stopDrone(); renderDrone(); });
+
+  const fxStrip = h('section', { class: 'fx-strip', 'aria-label': '전환 효과음과 드론' },
+    h('div', { class: 'fx-row' }, h('span', { class: 'label' }, '전환'), ...fxButtons, syncBtn, fxState),
+    h('div', { class: 'fx-row' }, droneBtn, droneKeys, droneVol.el));
 
   // ---- 루퍼 한 줄 ----
   const lPlay = h('button', { type: 'button', class: 'stage-btn strip-btn', 'aria-pressed': 'false' }, '▶ 재생');
@@ -164,6 +300,7 @@ export function StageView(root, app) {
       h('section', { class: 'stage-pads', 'aria-label': '음색 패드' },
         h('div', { class: 'stage-head' }, h('h2', {}, '음색 패드 · 숫자 키 1–8'), editPadsBtn),
         padsGrid,
+        fxStrip,
         strip,
         looperWrap),
       h('aside', { class: 'stage-side', 'aria-label': '연주 조절' },
@@ -172,7 +309,7 @@ export function StageView(root, app) {
         h('div', { class: 'xy-ranges' },
           h('label', { for: xId }, '밝기'), xRange,
           h('label', { for: yId }, '공간'), yRange, centerBtn),
-        h('div', { class: 'stage-side-btns' }, holdBtn, nextSoundBtn))));
+        h('div', { class: 'stage-side-btns' }, holdBtn, nextSoundBtn, rotaryBtn))));
 
   // ---- 그리기 ----
   const presetOptions = (selected) => [
@@ -271,12 +408,20 @@ export function StageView(root, app) {
     lInfo.textContent = `${info.clock.bpm} BPM · ${info.clock.bars}마디 · 녹음할 트랙 ${info.armed + 1}`;
   }
 
+  function renderRotary() {
+    rotaryBtn.hidden = !app.rotaryUsed;
+    rotaryBtn.setAttribute('aria-pressed', String(app.patch.fx.rotaryFast));
+    rotaryBtn.textContent = app.patch.fx.rotaryFast ? '로터리 빠름 ▸ 느리게' : '로터리 느림 ▸ 빠르게';
+  }
+
   function render() {
     renderSet();
     renderPads();
     holdBtn.setAttribute('aria-pressed', String(app.keyboard?.hold ?? false));
     renderXY();
     renderStrip();
+    renderRotary();
+    renderDrone();
   }
 
   app.on('patch', ({ phase } = {}) => {
@@ -286,12 +431,12 @@ export function StageView(root, app) {
       xy.x = 0.5;
       xy.y = 0.5;
     }
-    if (phase !== 'input' && !root.hidden) { renderPads(); renderXY(); }
+    if (phase !== 'input' && !root.hidden) { renderPads(); renderXY(); renderRotary(); }
   });
   app.on('presets', render);
   app.on('hold', () => holdBtn.setAttribute('aria-pressed', String(app.keyboard.hold)));
   app.on('show:stage', render);
-  app.onFrame(() => { if (!root.hidden) renderStrip(); });
+  app.onFrame(() => { if (!root.hidden) { renderStrip(); renderFxState(); } });
   window.addEventListener('keydown', (e) => {
     if (root.hidden || e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target) || e.repeat) return;
     const k = Number(e.key);
@@ -307,5 +452,8 @@ export function StageView(root, app) {
     looperSlot,
     openLooper: () => setLooperOpen(true),
     assignPad(k, id) { st.pads[k] = id; persist(); renderPads(); },
+    playFxAt,
+    fireFx,
+    drone: () => (drone ? { pc: drone.pc, voices: drone.inst.voiceCount } : null),
   };
 }

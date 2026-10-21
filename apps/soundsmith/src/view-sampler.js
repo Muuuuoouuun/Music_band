@@ -136,7 +136,9 @@ export function SamplerView(root, app) {
     bakeBtn.disabled = true;
     try {
       const patch = app.patch.source === 'sample' ? { ...app.patch, source: 'synth' } : app.patch;
-      const buf = await renderNote(patch, { midi, seconds: Math.min(6, 2.5 + patch.ampEnv.a), hold: Math.min(5, 2 + patch.ampEnv.a), tuning: {} });
+      const library = app.studio.library;
+      if (patch.source === 'piano' || patch.layers.some((l) => l.patch.source === 'piano')) await library.load('grand');
+      const buf = await renderNote(patch, { midi, seconds: Math.min(6, 2.5 + patch.ampEnv.a), hold: Math.min(5, 2 + patch.ampEnv.a), tuning: {}, library });
       accept(analyzeSample(`${patch.name} ${noteName(midi)}`, toMono([buf.getChannelData(0), buf.getChannelData(1)]), buf.sampleRate, midi));
     } finally {
       bakeBtn.disabled = false;

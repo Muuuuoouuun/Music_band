@@ -3,7 +3,8 @@ import { h, panel, nextId, knob } from './ui.js';
 import { drawRoll } from './draw.js';
 import { Instrument } from './engine.js';
 import { LooperState, METERS, QUANTIZE, loopClock, barBeat, eventsInWindow, exampleLoop } from './looper.js';
-import { factoryById } from './presets.js';
+import { factoryById, FACTORY } from './presets.js';
+import { parseChart, arrange, liftPoints, STYLES } from './arrange.js';
 
 const AHEAD = 0.12;
 const TICK_MS = 25;
@@ -24,6 +25,9 @@ export function LooperView(root, app) {
   const t = { playing: false, t0: 0, scheduled: 0, timer: null, lastIter: 0 };
   const rec = { track: 3, active: false, counting: false };
   let metronome = true;
+  // 반주 만들기가 표시한 '후렴 앞 마디' (이 마디 끝에 라이저가 끝나도록 자동으로 울림)
+  let lifts = [];
+  let autoRiser = true;
 
   // ---- 트랜스포트 ----
   const playBtn = h('button', { type: 'button', class: 'transport-btn', 'aria-pressed': 'false' }, '▶ 재생');
@@ -84,11 +88,80 @@ export function LooperView(root, app) {
     return { el, arm, sound, mute, solo, roll, undo, clear, track };
   });
 
+  // ---- 반주 만들기: 코드 진행 → 보이싱 → 트랙 ----
+  const chartId = nextId('chart');
+  const chartIn = h('input', { type: 'text', id: chartId, class: 'text-input chart-input', value: '| C | G/B | Am7 | Fadd9 |', spellcheck: 'false', autocomplete: 'off' });
+  const widthRow = h('div', { class: 'bar-widths', role: 'group', 'aria-label': '마디마다 좁게·넓게' });
+  const chartNote = h('p', { class: 'panel-hint', 'aria-live': 'polite' });
+  let widths = [];
+  const styleSeg = h('div', { class: 'seg', role: 'group', 'aria-label': '반주 스타일' });
+  let style = 'pad';
+  const SOUND_FOR = { pad: 'worship-pad', pulse: 'tremolo-rhodes', arp: 'arp-pluck', organ: 'gospel-organ' };
+  const soundSel = h('select', { 'aria-label': '반주 음색' }, ...FACTORY.filter((f) => !f.patch.layers.length).map((f) => h('option', { value: f.id }, f.patch.name)));
+  soundSel.value = SOUND_FOR[style];
+  const arrTrack = h('select', { 'aria-label': '넣을 트랙' }, ...L.tracks.map((tr, i) => h('option', { value: i, selected: i === 1 || null }, tr.name)));
+  const riserBtn = h('button', { type: 'button', class: 'toggle small', 'aria-pressed': 'true', title: '좁게 → 넓게 로 바뀌는 마디 앞에서 라이저가 끝나도록' }, '후렴 앞 라이저');
+  riserBtn.addEventListener('click', () => { autoRiser = !autoRiser; riserBtn.setAttribute('aria-pressed', String(autoRiser)); });
+  function renderArranger() {
+    const { bars, bad } = parseChart(chartIn.value);
+    // 마디 수가 바뀌면 앞 절반은 좁게(절), 뒤 절반은 넓게(후렴)로 다시 시작
+    if (widths.length !== bars.length) widths = bars.map((_, i) => (bars.length > 2 && i >= Math.ceil(bars.length / 2) ? 'wide' : 'narrow'));
+    widthRow.replaceChildren(...bars.map((chords, i) => {
+      const b = h('button', { type: 'button', class: 'bar-width', 'aria-pressed': String(widths[i] === 'wide'), title: '눌러서 좁게 ↔ 넓게' },
+        h('span', { class: 'bar-no' }, String(i + 1)), h('strong', {}, chords.map((c) => c.name).join(' ')), h('span', {}, widths[i] === 'wide' ? '넓게' : '좁게'));
+      b.addEventListener('click', () => { widths[i] = widths[i] === 'wide' ? 'narrow' : 'wide'; renderArranger(); });
+      return b;
+    }));
+    chartNote.textContent = bad.length
+      ? `읽지 못한 코드: ${bad.join(', ')} — 예: C, Am7, G/B, Fadd9, Dsus4, Bb2`
+      : bars.length > 8 ? '루퍼는 8마디까지예요. 앞 8마디만 넣어요.' : `${bars.length}마디 · 마디를 눌러 좁게(절)·넓게(후렴)를 바꿔요`;
+    styleSeg.replaceChildren(...STYLES.map((x) => {
+      const b = h('button', { type: 'button', class: 'seg-btn', 'aria-pressed': String(x.id === style), title: x.hint }, x.label);
+      b.addEventListener('click', () => { style = x.id; soundSel.value = SOUND_FOR[style]; renderArranger(); });
+      return b;
+    }));
+    return { bars };
+  }
+  chartIn.addEventListener('input', renderArranger);
+  function putArrangement() {
+    const parsed = renderArranger();
+    const bars = parsed.bars.slice(0, 8);
+    if (!bars.length) {
+      app.notice('코드를 하나도 읽지 못했어요. 예: | C | G/B | Am7 | Fadd9 |', 'bad');
+      return;
+    }
+    if (t.playing) stop();
+    const loopBars = [1, 2, 4, 8].find((n) => n >= bars.length);
+    barsSel.value = String(loopBars);
+    clock = loopClock({ bpm: clock.bpm, meter: clock.meter, bars: loopBars });
+    L.fitTo(clock.beats);
+    const i = Number(arrTrack.value);
+    const track = L.tracks[i];
+    const w = widths.slice(0, bars.length);
+    track.notes = arrange(bars, { style, beatsPerBar: clock.beatsPerBar, widths: w });
+    const { patch } = factoryById(soundSel.value);
+    track.sound = { patch, sample: null, label: patch.name };
+    track.example = false;
+    lifts = liftPoints(w);
+    applySound(track);
+    render();
+    app.notice(`${track.name}에 ${bars.length}마디 반주(${STYLES.find((x) => x.id === style).label}, ${patch.name})를 넣었어요.${lifts.length && autoRiser ? ' 후렴 앞에서 라이저가 울려요.' : ''}`, 'good');
+  }
+  const arranger = h('details', { class: 'arranger' },
+    h('summary', {}, '반주 만들기 — 코드 진행으로 트랙 채우기'),
+    h('div', { class: 'arranger-body' },
+      h('label', { for: chartId, class: 'label' }, '코드 진행 (마디는 | 로, 한 마디 두 코드는 띄어쓰기, % = 앞과 같음)'), chartIn,
+      widthRow, chartNote,
+      h('div', { class: 'btn-row' }, styleSeg),
+      h('div', { class: 'btn-row' }, soundSel, arrTrack, riserBtn,
+        h('button', { type: 'button', class: 'primary', onclick: putArrangement }, '트랙에 넣기'))));
+  renderArranger();
+
   root.append(
     panel('루퍼', {
       cls: 'span-wide looper-panel',
       hint: '녹음할 트랙(●)을 고르고 녹음을 누르면 한 마디를 세고 시작해요. 녹음을 켜 둔 채로 돌면 한 바퀴마다 겹쳐 쌓이고, 실행 취소는 마지막 바퀴만 지웁니다.',
-    }, transport, h('div', { class: 'tracks' }, ...rows.map((r) => r.el))));
+    }, transport, h('div', { class: 'tracks' }, ...rows.map((r) => r.el)), arranger));
 
   // ---- 소리 ----
   function setSound(track) {
@@ -97,7 +170,9 @@ export function LooperView(root, app) {
   }
   function applySound(track) {
     if (!track.sound) return;
-    const p = { ...track.sound.patch, volume: track.sound.patch.volume * track.volume };
+    // 트랙 볼륨은 겹친 음색에도 같이
+    const sp = track.sound.patch;
+    const p = { ...sp, volume: sp.volume * track.volume, layers: sp.layers.map((l) => ({ ...l, level: l.level * track.volume })) };
     if (track.inst) {
       track.inst.setPatch(p);
       track.inst.setSample(track.sound.sample);
@@ -119,6 +194,11 @@ export function LooperView(root, app) {
     if (until <= from) return;
     for (let b = Math.ceil(from); b < until; b++) {
       if (b < 0 || metronome) app.studio.click(t.t0 + b * bs, ((b % clock.beatsPerBar) + clock.beatsPerBar) % clock.beatsPerBar === 0);
+    }
+    if (until > 0 && autoRiser && lifts.length && app.stage?.playFxAt) {
+      const riserBeats = 2 * clock.beatsPerBar;
+      const marks = lifts.map((b) => ({ t: (((b + 1) * clock.beatsPerBar - riserBeats) % clock.beats + clock.beats) % clock.beats, iter: -1 }));
+      for (const ev of eventsInWindow(marks, clock.beats, Math.max(0, from), until)) app.stage.playFxAt('riser', t.t0 + ev.at * bs);
     }
     if (until > 0) {
       const f = Math.max(0, from);
@@ -224,6 +304,7 @@ export function LooperView(root, app) {
   });
   const reshape = () => {
     if (t.playing) stop();
+    lifts = [];
     clock = loopClock({ bpm: clock.bpm, meter: meterSel.value, bars: Number(barsSel.value) });
     L.fitTo(clock.beats);
     render();
@@ -287,7 +368,7 @@ export function LooperView(root, app) {
     },
     info() {
       const b = t.playing && app.studio.ctx ? beatNow() : null;
-      return { playing: t.playing, recording: rec.active, counting: rec.counting, beat: b, inLoop: b == null || b < 0 ? null : b % clock.beats, clock, armed: rec.track, tracks: L.tracks };
+      return { playing: t.playing, recording: rec.active, counting: rec.counting, beat: b, inLoop: b == null || b < 0 ? null : b % clock.beats, clock, armed: rec.track, tracks: L.tracks, t0: t.t0, lifts };
     },
   };
 }

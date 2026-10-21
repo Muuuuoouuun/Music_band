@@ -10,7 +10,7 @@ const isTyping = (el) => el && (el.isContentEditable || ['TEXTAREA', 'SELECT'].i
   || (el.tagName === 'INPUT' && !['range', 'button', 'checkbox', 'radio'].includes(el.type)));
 
 export class Keyboard {
-  /** handlers: { noteOn(midi, velocity), noteOff(midi), sustain(on), describe(midi) -> 글 } */
+  /** handlers: { noteOn(midi, velocity), noteOff(midi), sustain(on), describe(midi) -> 글, mod(0..1) } */
   constructor(root, handlers) {
     this.root = root;
     this.handlers = handlers;
@@ -196,5 +196,7 @@ export class Keyboard {
     if (type === 0x90 && d2 > 0) this.press(`m${d1}`, d1, d2 / 127);
     else if (type === 0x80 || (type === 0x90 && d2 === 0)) this.release(`m${d1}`);
     else if (type === 0xb0 && d1 === 64) this.setHold(d2 >= 64);
+    // 모듈레이션 휠(CC1): 로터리 스피커 느림·빠름 (노드 건반처럼 휠을 올리면 빠르게)
+    else if (type === 0xb0 && d1 === 1) this.handlers.mod?.(d2 / 127);
   }
 }

@@ -1,5 +1,6 @@
 // 브라우저에서 엔진 확인: 기본 음색마다 한 음을 미리 연주(OfflineAudioContext)해서
 // 소리가 나는지, 숫자가 깨지지 않는지, 튜닝대로 음높이가 맞는지, 톤 EQ 가 계산대로 걸리는지 본다.
+// 그랜드 피아노 샘플(90개)을 실제로 받아 풀고, 겹친 음색·나누기·전환 효과음·샘플 패드 굽기도 확인한다.
 // 실행: npm start 로 서버를 띄운 뒤 node test/engine.check.mjs
 import { chromium, launchOptions } from './browser.mjs';
 
@@ -11,9 +12,13 @@ const result = await page.evaluate(async () => {
   const { renderNote } = await import('/src/engine.js');
   const { FACTORY } = await import('/src/presets.js');
   const { detectPitch, demoSample, findLoop } = await import('/src/sample.js');
+  const { Library } = await import('/src/library.js');
+  const dec = new OfflineAudioContext(2, 1, 44100);
+  const library = new Library({ decode: (b) => dec.decodeAudioData(b) });
+  await library.load('grand');
   const out = [];
   for (const { patch } of FACTORY) {
-    const buf = await renderNote(patch, { midi: patch.category === 'bass' ? 45 : 57, seconds: 2.5, hold: 1.5 });
+    const buf = await renderNote(patch, { midi: patch.category === 'bass' ? 45 : 57, seconds: 2.5, hold: 1.5, library });
     const x = buf.getChannelData(0);
     let peak = 0;
     let bad = 0;
@@ -69,13 +74,50 @@ const result = await page.evaluate(async () => {
   };
   const flatAir = (await measure(pad)).bands[5];
   const upAir = (await measure({ ...pad, tone: { ...pad.tone, air: 12 } })).bands[5];
-  return { out, a432: p432?.hz, justE: pJust?.hz, sampleLateHz: late?.hz, latePeak, eqErr, flatAir, upAir };
+  // 겹치기·나누기: 메인은 C4 위, 겹친 음색(사인)은 B3 아래에서 한 옥타브 내려 → A3 을 치면 A2 만
+  const split = normalizePatch({ osc: [{ wave: 'sawtooth', level: 0.7 }], keys: { lo: 60, hi: 127 }, layers: [{ patch: { osc: [{ wave: 'sine', level: 0.9 }], fx: { reverb: 0 } }, level: 1, octave: -1, lo: 0, hi: 59 }], fx: { reverb: 0 } });
+  const sp = await renderNote(split, { midi: 57, seconds: 1, hold: 0.9 });
+  const splitHz = detectPitch(sp.getChannelData(0), 44100, { start: 4410, end: 30000 })?.hz;
+  // 오르간 16′ 은 한 옥타브 아래: A3 을 치면 110 Hz 가 바닥
+  const org = await renderNote(FACTORY.find((f) => f.id === 'jazz-organ').patch, { midi: 57, seconds: 1, hold: 0.9 });
+  const organHz = detectPitch(org.getChannelData(0), 44100, { start: 4410, end: 30000 })?.hz;
+  // 피아노: 받은 샘플로 A4
+  const pno = await renderNote(FACTORY.find((f) => f.id === 'grand-piano').patch, { midi: 69, seconds: 1.5, hold: 1.2, library });
+  const pianoHz = detectPitch(pno.getChannelData(0), 44100, { start: 4410, end: 40000 })?.hz;
+  // 전환 효과음과 샘플 패드 굽기
+  const { renderRiser, renderImpact, renderDownlifter, renderReverseSwell } = await import('/src/fxgen.js');
+  const peakOf = (b) => { let m = 0; let bad = 0; for (let c = 0; c < b.numberOfChannels; c++) for (const v of b.getChannelData(c)) { if (!Number.isFinite(v)) bad++; m = Math.max(m, Math.abs(v)); } return { peak: +m.toFixed(3), bad, seconds: +(b.length / b.sampleRate).toFixed(2) }; };
+  const fx = {
+    riser: peakOf(await renderRiser(6.67)),
+    impact: peakOf(await renderImpact()),
+    down: peakOf(await renderDownlifter(3.3)),
+    reverse: peakOf(await renderReverseSwell(FACTORY[0].patch, [48, 55, 60, 64, 67], 3.3)),
+  };
+  // 거꾸로 스웰은 끝(= 원래 첫 소리)이 가장 커야 한다
+  const rev = await renderReverseSwell(FACTORY.find((f) => f.id === 'dx-ep').patch, [60, 64, 67], 2);
+  const rx = rev.getChannelData(0);
+  let lateMax = 0; let earlyMax = 0;
+  for (let i = 0; i < rx.length; i++) { const v = Math.abs(rx[i]); if (i > rx.length * 0.8) lateMax = Math.max(lateMax, v); else if (i < rx.length * 0.3) earlyMax = Math.max(earlyMax, v); }
+  const { demoBeat, detectOnsets, slicesFrom } = await import('/src/chop.js');
+  const { renderPattern, defaultPad, replayPattern } = await import('/src/pads.js');
+  const d = demoBeat(44100, 90);
+  const pads = slicesFrom(detectOnsets(d.data, d.sr), d.data.length).map(defaultPad);
+  const pat = await renderPattern({ data: d.data, sr: d.sr, pads, steps: replayPattern(pads, d.sr, 90), fx: { bits: 12, lofi: 0.3, rate: 26040 }, bpm: 90, swing: 0.58, loops: 1 });
+  return { out, a432: p432?.hz, justE: pJust?.hz, sampleLateHz: late?.hz, latePeak, eqErr, flatAir, upAir, splitHz, organHz, pianoHz, fx, reverseShape: { lateMax, earlyMax }, pattern: peakOf(pat) };
 });
 console.table(result.out);
 // C 순정률 + A4=440 고정이면 C4=264, E4=330 Hz (C 와 5/4)
 console.log({ a432: result.a432, justE4: result.justE, sampleLoopA3: result.sampleLateHz, latePeak: result.latePeak, eqErr: result.eqErr, flatAir: result.flatAir, upAir: result.upAir });
 if (!(result.eqErr < 0.05)) { console.error('톤 EQ 응답이 계산과 다름', result.eqErr); process.exitCode = 1; }
 if (!(result.upAir > result.flatAir + 4)) { console.error('공기 +12 dB 가 잰 값에 안 보임'); process.exitCode = 1; }
+console.log({ splitHz: result.splitHz, organHz: result.organHz, pianoHz: result.pianoHz, reverseShape: result.reverseShape, pattern: result.pattern });
+console.table(result.fx);
+if (Math.abs(result.splitHz - 110) > 1.5) { console.error('나누기: A3 이 겹친 음색(한 옥타브 아래)으로만 나야 함'); process.exitCode = 1; }
+if (Math.abs(result.organHz - 110) > 1.5) { console.error('오르간 16′ 바닥음이 110 Hz 아님'); process.exitCode = 1; }
+if (Math.abs(result.pianoHz - 440) > 4) { console.error('피아노 A4 가 440 Hz 근처 아님'); process.exitCode = 1; }
+for (const [k, v] of Object.entries(result.fx)) if (v.bad || v.peak < 0.05 || v.peak > 1.5) { console.error('전환 효과음 이상', k, v); process.exitCode = 1; }
+if (!(result.reverseShape.lateMax > result.reverseShape.earlyMax * 2)) { console.error('거꾸로 스웰이 끝으로 갈수록 커지지 않음'); process.exitCode = 1; }
+if (result.pattern.bad || result.pattern.peak < 0.05) { console.error('샘플 패드 굽기 이상', result.pattern); process.exitCode = 1; }
 if (Math.abs(result.justE - 330) > 1) { console.error('순정률 E4 가 330 Hz 아님'); process.exitCode = 1; }
 if (Math.abs(result.sampleLateHz - 220) > 1 || result.latePeak < 0.05) { console.error('샘플 루프가 A3 로 이어지지 않음'); process.exitCode = 1; }
 const fails = result.out.filter((r) => r.bad || r.peak < 0.02 || r.peak > 1.2);

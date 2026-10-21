@@ -24,11 +24,12 @@ export function chordFor(patch) {
 const chordName = (patch) => (patch.mono ? '한 음' : patch.category === 'bass' ? '낮은 C·G 화음' : 'C 장화음');
 
 /** 음색을 화음으로 미리 연주해(잔향까지) 톤을 잰다. 톤 EQ 는 빼고 재서, 노브를 돌릴 때는 다시 재지 않는다. */
-export async function measurePatch(patch, sample = null) {
+export async function measurePatch(patch, sample = null, library = null) {
   if (patch.source === 'sample' && !sample) return null;
+  if (library && (patch.source === 'piano' || patch.layers?.some((l) => l.patch.source === 'piano'))) await library.load('grand');
   const flat = { ...patch, tone: { ...FLAT_TONE } };
   const seconds = Math.min(6.5, Math.max(3, patch.ampEnv.a + 2.5));
-  const buf = await renderNote(flat, { midi: chordFor(patch), seconds, hold: seconds - 0.3, dry: false, sample, velocity: 0.7 });
+  const buf = await renderNote(flat, { midi: chordFor(patch), seconds, hold: seconds - 0.3, dry: false, sample, velocity: 0.7, library });
   return analyzeTone([buf.getChannelData(0), buf.getChannelData(1)], buf.sampleRate);
 }
 
@@ -205,7 +206,7 @@ export function ToneView(root, app) {
   const versionA = () => ({ ...app.patch, tone: { ...FLAT_TONE } });
   const versionB = () => {
     const g = matched && measure ? withTone(measure.data, app.patch.tone).gain : 1;
-    return { ...app.patch, volume: app.patch.volume / g };
+    return { ...app.patch, volume: app.patch.volume / g, layers: app.patch.layers.map((l) => ({ ...l, level: l.level / g })) };
   };
   async function play(which) {
     if (app.patch.source === 'sample' && !app.sample) {
@@ -385,7 +386,7 @@ export function ToneView(root, app) {
     if (!entry) return;
     presetSel.disabled = true;
     try {
-      const data = await measurePatch(entry.patch, app.engineSample);
+      const data = await measurePatch(entry.patch, app.engineSample, app.studio.library);
       if (!data) throw new Error('sample');
       const was = ref?.kind;
       ref = { kind: 'patch', name: entry.patch.name, detail: `음색 · ${chordName(entry.patch)}`, ...withTone(data, entry.patch.tone), rms: data.rms };
@@ -570,7 +571,7 @@ export function ToneView(root, app) {
     measuring = key;
     measureState.textContent = '재는 중…';
     try {
-      const data = await measurePatch(patch, app.engineSample);
+      const data = await measurePatch(patch, app.engineSample, app.studio.library);
       if (keyOf(app.patch) !== key) return; // 재는 사이에 바뀌었으면 다음 번에
       measure = data ? { key, data, name: patch.name } : null;
       measureState.textContent = data ? `${chordName(patch)}으로 쟀어요` : '';

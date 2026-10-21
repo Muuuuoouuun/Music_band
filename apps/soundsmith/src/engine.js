@@ -2,11 +2,14 @@
 //
 //   음 하나(voice) ─ 오실레이터 ×겹치기 ─┐                    ┌ 트레몰로 ─ 볼륨 엔벨로프 ─┐
 //                  FM 변조기 ─→ 주파수   ├─ 섞기 ─ 필터 ──────┘                            │
-//                  노이즈 / 줄 / 샘플 ───┘    ↑ 필터 엔벨로프·LFO                           │
-//   악기(instrument) ← 음들 ─ 드라이브 ─ 코러스 ─┬─ 톤 EQ ─ 볼륨 ─→ 스튜디오 버스          ←─┘
-//                                               ├─ 딜레이(박에 맞춤, 되먹임) ─┤
-//                                               └─ 잔향(합성 홀) ─────────────┘
-//   톤 EQ = 로우컷 + 대역 6개 (톤 맞추기 탭). 효과까지 거친 소리 전체에 건다.
+//                  노이즈 / 줄 / 오르간 / 피아노 / 샘플 ┘  ↑ 필터 엔벨로프·LFO·피치 엔벨로프   │
+//   악기(instrument) ← 음들 ─ 드라이브 ─ [비트·페이저] ─ 코러스 ─ [로터리·좌우 트레몰로·로파이] ←┘
+//        ─┬─ 톤 EQ ─ 볼륨 ─→ 스튜디오 버스
+//         ├─ 딜레이(박에 맞춤, 되먹임) ─┤
+//         ├─ 잔향(합성 홀) ─────────────┤
+//         └─ 시머(옥타브 위로 번지는 잔향) ┘
+//   [ ] 안의 이펙트는 처음 켤 때 만들어 끼운다 (fx.js). 톤 EQ = 로우컷 + 대역 6개 (톤 맞추기 탭).
+//   겹친 음색(layers)은 악기 안에 작은 악기를 더 두어, 건반 범위·옥타브에 맞춰 같이 연주한다.
 //   스튜디오 버스 ─ 리미터 ─ 마스터 ─ 분석기(오실로스코프) ─ 스피커
 //
 // 루퍼 트랙마다 악기를 하나씩 따로 만들어 서로 다른 음색이 동시에 울린다.
@@ -14,6 +17,8 @@
 import { HARMONICS, envLevel } from './patch.js';
 import { makeTuner } from './tuning.js';
 import { FLAT_TONE, toneFilters } from './tone.js';
+import { InsertChain, makeBits, makePhaser, makeRotary, makeAutoPan, makeLofi, makeShimmer, drawbarSpectrum } from './fx.js';
+import { LIBRARIES, pickZone } from './library.js';
 
 const MAX_VOICES = 12;
 const clampHz = (f) => Math.min(20000, Math.max(20, f));
@@ -154,6 +159,24 @@ function holdAt(param, when, fallback) {
 }
 
 const waveCache = new WeakMap();
+function cachedWave(ctx, key, make) {
+  let forCtx = waveCache.get(ctx);
+  if (!forCtx) waveCache.set(ctx, (forCtx = new Map()));
+  if (!forCtx.has(key)) {
+    if (forCtx.size > 64) forCtx.delete(forCtx.keys().next().value);
+    forCtx.set(key, make());
+  }
+  return forCtx.get(key);
+}
+
+/** 드로바 배음을 담은 파형 (16′ = 기본음의 한 옥타브 아래로 돈다). */
+function organWave(ctx, bars) {
+  return cachedWave(ctx, `organ:${bars.join('')}`, () => {
+    const imag = drawbarSpectrum(bars);
+    return ctx.createPeriodicWave(new Float32Array(imag.length), imag, { disableNormalization: true });
+  });
+}
+
 function setWave(ctx, osc, id, custom) {
   if (!HARMONICS[id] && id !== 'custom') {
     osc.type = id;
@@ -197,7 +220,13 @@ export class Instrument {
     this.fxBus = gain(1);
     this.volume = gain(0.8);
     this.input.connect(this.shaper).connect(this.postDrive);
-    this.postDrive.connect(this.chorusDry).connect(this.fxBus);
+    // 코러스 앞뒤의 이펙트 자리 (켤 때 끼움)
+    this.preOut = gain(1);
+    this.preChain = new InsertChain(this.postDrive, this.preOut);
+    this.chorusOut = gain(1);
+    this.postChain = new InsertChain(this.chorusOut, this.fxBus);
+    this.blocks = {};
+    this.preOut.connect(this.chorusDry).connect(this.chorusOut);
     this.chorusLfos = [];
     for (const [base, rate, depth, pan] of [[0.012, 0.31, 0.0025, -0.7], [0.019, 0.43, 0.003, 0.7]]) {
       const d = ctx.createDelay(0.06);
@@ -210,9 +239,9 @@ export class Instrument {
       lfo.connect(lg).connect(d.delayTime);
       lfo.start();
       this.chorusLfos.push(lfo);
-      this.postDrive.connect(d).connect(p).connect(this.chorusWet);
+      this.preOut.connect(d).connect(p).connect(this.chorusWet);
     }
-    this.chorusWet.connect(this.fxBus);
+    this.chorusWet.connect(this.chorusOut);
     // 톤 EQ: 마른 소리·딜레이·잔향이 모두 여기로 모인다
     this.eqIn = gain(1);
     this.eq = toneFilters(FLAT_TONE).map((f) => {
@@ -239,6 +268,9 @@ export class Instrument {
     this.reverb = ctx.createConvolver();
     this.fxBus.connect(this.reverbSend).connect(this.reverb).connect(this.eqIn);
     this.volume.connect(env.out);
+    // 겹친 음색들 (작은 악기) 과 그 악기들에 보낸 음
+    this.parts = [];
+    this.partHeld = new Map();
     // LFO 하나를 세 곳(음정·필터·볼륨)으로 나눠 보낸다. 흔드는 곳을 바꾸면 깊이만 옮겨진다.
     this.lfo = ctx.createOscillator();
     this.lfoTo = { pitch: gain(0), filter: gain(0), amp: gain(0) };
@@ -257,11 +289,53 @@ export class Instrument {
   get voiceCount() {
     let n = 0;
     for (const v of this.voices) if (!v.released) n++;
+    for (const part of this.parts) n += part.inst.voiceCount;
     return n;
   }
 
   setSample(sample) {
     this.sample = sample;
+    for (const part of this.parts) part.inst.setSample(sample);
+  }
+
+  /** 이펙트 블록: 켜져 있으면 (없으면 만들어) 돌려주고, 꺼져 있으면 null. */
+  _block(name, on, make) {
+    if (!on) return null;
+    if (!this.blocks[name]) this.blocks[name] = make();
+    return this.blocks[name];
+  }
+
+  _syncFx(p, now) {
+    const ctx = this.ctx;
+    const fx = p.fx;
+    const pre = [this._block('bits', fx.bits < 16, () => makeBits(ctx)), this._block('phaser', fx.phaser > 0.001, () => makePhaser(ctx))].filter(Boolean);
+    const post = [
+      this._block('rotary', fx.rotary > 0.001, () => makeRotary(ctx)),
+      this._block('pan', fx.trem > 0.001, () => makeAutoPan(ctx)),
+      this._block('lofi', fx.lofi > 0.001, () => makeLofi(ctx)),
+    ].filter(Boolean);
+    for (const b of [...pre, ...post]) b.set(fx, now);
+    this.preChain.set(pre);
+    this.postChain.set(post);
+    const shimmer = this._block('shimmer', fx.shimmer > 0.001, () => {
+      const b = makeShimmer(ctx, (sec) => this.env.irFor(sec));
+      this.fxBus.connect(b.input);
+      b.output.connect(this.eqIn);
+      return b;
+    });
+    shimmer?.set(fx, now);
+    if (!shimmer && this.blocks.shimmer) this.blocks.shimmer.set({ shimmer: 0 }, now);
+  }
+
+  /** 겹친 음색: 작은 악기를 패치 수만큼 맞춘다 (볼륨 = 그 음색 볼륨 × 겹침 세기). */
+  _syncLayers(layers) {
+    layers.forEach((l, i) => {
+      const lp = { ...l.patch, volume: l.patch.volume * l.level };
+      if (this.parts[i]) this.parts[i].inst.setPatch(lp);
+      else this.parts[i] = { inst: new Instrument(this.env, lp, this.sample) };
+      this.parts[i].layer = l;
+    });
+    while (this.parts.length > layers.length) this.parts.pop().inst.dispose();
   }
 
   setPatch(patch) {
@@ -287,6 +361,8 @@ export class Instrument {
       smooth(this.eq[i].gain, f.gain);
     });
     smooth(this.volume.gain, p.volume);
+    this._syncFx(p, now);
+    this._syncLayers(p.layers ?? []);
     smooth(this.lfo.frequency, p.lfo.rate);
     const depth = { pitch: p.lfo.depth * 50, filter: p.lfo.depth * 2400, amp: p.lfo.depth * 0.5 };
     for (const [k, g] of Object.entries(this.lfoTo)) smooth(g.gain, p.lfo.target === k ? depth[k] : 0);
@@ -297,15 +373,26 @@ export class Instrument {
   syncTempo() {
     const beat = 60 / this.env.bpm();
     this.echo.delayTime.setTargetAtTime(Math.min(3.9, this.patch.fx.delayBeats * beat), this.ctx.currentTime, 0.05);
+    for (const part of this.parts) part.inst.syncTempo();
   }
 
   setSustain(on, when = this.ctx.currentTime) {
     this.sustain = on;
+    for (const part of this.parts) part.inst.setSustain(on, when);
     if (!on) for (const v of this.voices) if (v.sustained && !v.released) this._release(v, when);
   }
 
   noteOn(midi, velocity = 0.8, when = this.ctx.currentTime) {
+    this.parts.forEach((part, i) => {
+      const l = part.layer;
+      if (midi < l.lo || midi > l.hi) return;
+      const m = midi + 12 * l.octave;
+      this.partHeld.set(`${i}:${midi}`, m);
+      part.inst.noteOn(m, velocity, when);
+    });
     const p = this.patch;
+    if (midi < p.keys.lo || midi > p.keys.hi) return;
+    this.blocks.lofi?.gate(true, when);
     if (p.mono) {
       this.monoStack = this.monoStack.filter((m) => m !== midi).concat(midi);
       const cur = [...this.voices].find((v) => !v.released);
@@ -323,11 +410,18 @@ export class Instrument {
     }
     if (p.source === 'sample' && !this.sample) return;
     const v = this._makeVoice(midi, velocity, when);
+    if (!v) return;
     this.voices.add(v);
     this.held.set(midi, v);
   }
 
   noteOff(midi, when = this.ctx.currentTime) {
+    this.parts.forEach((part, i) => {
+      const key = `${i}:${midi}`;
+      if (!this.partHeld.has(key)) return;
+      part.inst.noteOff(this.partHeld.get(key), when);
+      this.partHeld.delete(key);
+    });
     const v = this.held.get(midi);
     this.held.delete(midi);
     if (this.patch.mono) {
@@ -352,20 +446,24 @@ export class Instrument {
 
   allOff(when = this.ctx.currentTime, fast = false) {
     this.held.clear();
+    this.partHeld.clear();
     this.monoStack = [];
+    for (const part of this.parts) part.inst.allOff(when, fast);
     for (const v of this.voices) this._release(v, when, fast ? 0.03 : undefined);
   }
 
   dispose() {
     this.allOff(this.ctx.currentTime, true);
+    for (const part of this.parts) part.inst.dispose();
     const ctx = this.ctx;
     setTimeout(() => {
       try {
         this.lfo.stop();
         this.chorusLfos.forEach((l) => l.stop());
+        for (const b of Object.values(this.blocks)) for (const o of b.oscillators ?? []) o.stop();
         this.volume.disconnect();
       } catch { /* 이미 닫힌 컨텍스트 */ }
-    }, ctx instanceof AudioContext ? 400 : 0);
+    }, typeof AudioContext !== 'undefined' && ctx instanceof AudioContext ? 400 : 0);
   }
 
   _pluckBuffer(freq, velocity) {
@@ -386,6 +484,11 @@ export class Instrument {
   _makeVoice(midi, velocity, when) {
     const ctx = this.ctx;
     const p = this.patch;
+    // 피아노 샘플을 아직 받지 않았으면 받기 시작만 하고 이번 음은 건너뛴다
+    if (p.source === 'piano' && !this.env.library?.get(LIBRARIES.grand.id)) {
+      this.env.library?.load(LIBRARIES.grand.id).catch(() => {});
+      return null;
+    }
     const tuner = this.env.tuner;
     const freq = tuner.freq(midi);
     const v = { midi, start: when, released: false, sources: [], nodes: [], patch: p, velocity };
@@ -510,6 +613,55 @@ export class Instrument {
       src.connect(body1).connect(body2).connect(air).connect(mix);
       v.sources.push(src);
       pitchTargets.push(src.detune);
+    } else if (p.source === 'organ') {
+      // 톤휠: 드로바 9개를 담은 파형 하나 (16′ 기준이라 한 옥타브 아래로 돈다)
+      const o = p.organ;
+      const osc = node(ctx.createOscillator());
+      osc.setPeriodicWave(organWave(ctx, o.bars));
+      osc.frequency.value = freq / 2;
+      osc.connect(mix);
+      v.sources.push(osc);
+      pitchTargets.push(osc.detune);
+      // 퍼커션: 다른 건반을 누르고 있지 않을 때만 (B3 의 한 번 울림)
+      if (o.perc !== 'off' && ![...this.held.values()].some((x) => !x.released)) {
+        const perc = node(ctx.createOscillator());
+        perc.frequency.value = freq * (o.perc === '2nd' ? 2 : 3);
+        const pg = gain(0);
+        const level = (o.percSoft ? 0.12 : 0.24) * (0.6 + 0.4 * velocity);
+        pg.gain.setValueAtTime(level, when);
+        pg.gain.setTargetAtTime(0, when + 0.002, o.percFast ? 0.07 : 0.3);
+        perc.connect(pg).connect(mix);
+        v.sources.push(perc);
+        pitchTargets.push(perc.detune);
+      }
+      // 키 클릭: 건반 접점이 닿는 순간의 짧은 '틱'
+      if (o.click > 0.001) {
+        const click = node(ctx.createBufferSource());
+        click.buffer = this.noise;
+        const bp = node(ctx.createBiquadFilter());
+        bp.type = 'bandpass';
+        bp.frequency.value = 2600 + 400 * Math.random();
+        bp.Q.value = 0.9;
+        const cg = gain(0);
+        cg.gain.setValueAtTime(0, when);
+        cg.gain.linearRampToValueAtTime(o.click * 0.35, when + 0.0015);
+        cg.gain.linearRampToValueAtTime(0, when + 0.009);
+        click.connect(bp).connect(cg).connect(mix);
+        v.stops = [[click, when + 0.02]];
+        v.sources.push(click);
+      }
+    } else if (p.source === 'piano') {
+      const lib = LIBRARIES.grand;
+      const z = pickZone(this.env.library.get(lib.id), lib, midi, velocity);
+      mix.gain.value = lib.gain;
+      const src = node(ctx.createBufferSource());
+      src.buffer = z.buffer;
+      src.playbackRate.value = freq / (440 * 2 ** ((z.root - 69) / 12));
+      src.connect(mix);
+      v.sources.push(src);
+      v.sampleOffset = z.start;
+      v.velScale = 0.55; // 세기 차이는 샘플 층이 이미 담고 있어 덜 키운다
+      pitchTargets.push(src.detune);
     } else {
       const s = this.sample;
       const src = node(ctx.createBufferSource());
@@ -523,10 +675,18 @@ export class Instrument {
       src.connect(mix);
       v.sources.push(src);
       v.sampleOffset = s.start;
-      if (!s.loop) src.stop(when + (s.end - s.start) / src.playbackRate.value);
+      if (!s.loop) v.stops = [[src, when + (s.end - s.start) / src.playbackRate.value]];
       pitchTargets.push(src.detune);
     }
     for (const param of pitchTargets) pitchLfo.connect(param);
+    // 피치 엔벨로프: 누른 순간 amt 반음만큼 벗어났다가 decay 동안 제자리로
+    if (Math.abs(p.pitch.amt) > 0.01) {
+      const pe = node(ctx.createConstantSource());
+      pe.offset.setValueAtTime(p.pitch.amt * 100, when);
+      pe.offset.setTargetAtTime(0, when + 0.001, Math.max(0.003, p.pitch.decay / 3));
+      for (const param of pitchTargets) pe.connect(param);
+      v.sources.push(pe);
+    }
 
     // 필터 엔벨로프 (세게 칠수록 조금 밝게)
     const fe = p.filterEnv;
@@ -539,7 +699,8 @@ export class Instrument {
     }
     // 볼륨 엔벨로프
     const ae = p.ampEnv;
-    v.peakAmp = 0.32 * (0.35 + 0.65 * velocity);
+    const vs = v.velScale ?? 0.65;
+    v.peakAmp = 0.32 * (1 - vs + vs * velocity);
     amp.gain.setValueAtTime(0, when);
     amp.gain.linearRampToValueAtTime(v.peakAmp, when + Math.max(0.001, ae.a));
     amp.gain.setTargetAtTime(v.peakAmp * ae.s, when + Math.max(0.001, ae.a), Math.max(0.005, ae.d / 4));
@@ -557,7 +718,11 @@ export class Instrument {
         filter.frequency.setTargetAtTime(clampHz(base * 2 ** (np.filter.env * np.filterEnv.s)), now, 0.03);
       }
     };
-    for (const src of v.sources) src.start(when, p.source === 'sample' ? v.sampleOffset : 0);
+    for (const src of v.sources) {
+      if (src === v.sources[0] && v.sampleOffset) src.start(when, v.sampleOffset);
+      else src.start(when);
+    }
+    for (const [src, at] of v.stops ?? []) src.stop(at);
     const life = v.sources[0];
     life.onended = () => {
       for (const [from, to] of v.lfoLinks) from.disconnect(to);
@@ -586,6 +751,7 @@ export class Instrument {
     for (const s of v.sources) {
       try { s.stop(stopAt); } catch { /* 이미 멈춤 */ }
     }
+    if (this.blocks.lofi && ![...this.voices].some((x) => !x.released)) this.blocks.lofi.gate(false, t + r * 0.5);
   }
 }
 
@@ -646,6 +812,7 @@ export class Studio {
       get tuner() { return studio.tuner; },
       bpm: () => studio.bpm,
       irFor: (s) => studio.irFor(s),
+      get library() { return studio.library; },
     };
   }
 
@@ -666,14 +833,15 @@ export class Studio {
 }
 
 /** 지금 음색으로 한 음(midi 가 배열이면 화음)을 미리 연주해 AudioBuffer 로 (샘플러의 '음색 굽기', 톤 재기, 테스트). */
-export async function renderNote(patch, { midi = 57, seconds = 3, hold = 2.2, tuning = {}, sample = null, sampleRate = 44100, dry = true, velocity = 0.8 } = {}) {
+export async function renderNote(patch, { midi = 57, seconds = 3, hold = 2.2, tuning = {}, sample = null, sampleRate = 44100, dry = true, velocity = 0.8, library = null, bpm = 72 } = {}) {
   const ctx = new OfflineAudioContext(2, Math.round(sampleRate * seconds), sampleRate);
   const irs = new Map();
   const env = {
     ctx,
     out: ctx.destination,
     tuner: makeTuner(tuning),
-    bpm: () => 72,
+    bpm: () => bpm,
+    library,
     irFor: (s) => {
       if (!irs.has(s)) irs.set(s, makeIR(ctx, s));
       return irs.get(s);

@@ -638,3 +638,65 @@ export function drawToneEq(canvas, tone, { focus = null, range = 12, sr = 44100 
     dbAt: (y) => span - ((y - pad.t) / (h - pad.t - pad.b)) * 2 * span,
   };
 }
+
+// ---------------------------------------------------------------------------
+// 겹치기·나누기: 88건반(A0–C8) 위에 파트마다 소리 나는 범위를 막대로.
+// parts: [{ lo, hi, label, color }] (color 는 토큰 이름)
+// ---------------------------------------------------------------------------
+
+export function drawKeyRanges(canvas, parts) {
+  const { g, w, h } = fit(canvas);
+  const LO = 21;
+  const HI = 108;
+  const whites = [];
+  for (let m = LO; m <= HI; m++) if (![1, 3, 6, 8, 10].includes(m % 12)) whites.push(m);
+  const kw = (w - 2) / whites.length;
+  const keyTop = h - 34;
+  const xOfWhite = (m) => 1 + whites.indexOf(m) * kw;
+  // 건반 위치 → 가로 좌표 (검은 건반은 두 흰 건반 사이)
+  const xOf = (m) => {
+    const c = Math.max(LO, Math.min(HI, m));
+    return whites.includes(c) ? xOfWhite(c) : xOfWhite(c - 1) + kw * 0.7;
+  };
+  const xEnd = (m) => {
+    const c = Math.max(LO, Math.min(HI, m));
+    return whites.includes(c) ? xOfWhite(c) + kw : xOfWhite(c - 1) + kw * 1.3;
+  };
+  g.fillStyle = color('key-white');
+  g.fillRect(1, keyTop, w - 2, 34);
+  g.strokeStyle = '#b9ae94';
+  g.lineWidth = 1;
+  for (let i = 0; i <= whites.length; i++) {
+    const x = Math.round(1 + i * kw) + 0.5;
+    g.beginPath();
+    g.moveTo(x, keyTop);
+    g.lineTo(x, h);
+    g.stroke();
+  }
+  g.fillStyle = color('key-black');
+  for (let m = LO; m <= HI; m++) if ([1, 3, 6, 8, 10].includes(m % 12)) g.fillRect(xOfWhite(m - 1) + kw * 0.68, keyTop, kw * 0.64, 20);
+  g.font = `10px ${color('font-data')}`;
+  g.fillStyle = color('key-white-ink');
+  for (let o = 1; o <= 8; o++) {
+    const m = 12 * (o + 1);
+    if (m <= HI) g.fillText(`C${o}`, xOfWhite(m) + 2, h - 3);
+  }
+  const rowH = Math.max(14, Math.min(22, (keyTop - 8) / Math.max(1, parts.length) - 4));
+  parts.forEach((p, i) => {
+    const y = 4 + i * (rowH + 4);
+    const x0 = xOf(Math.max(LO, p.lo));
+    const x1 = xEnd(Math.min(HI, p.hi));
+    g.fillStyle = color(p.color);
+    g.globalAlpha = 0.85;
+    g.fillRect(x0, y, Math.max(3, x1 - x0), rowH);
+    g.globalAlpha = 1;
+    g.fillStyle = color('brass-ink');
+    g.font = `11px ${color('font-body')}`;
+    const text = p.label;
+    if (g.measureText(text).width < x1 - x0 - 8) g.fillText(text, x0 + 5, y + rowH / 2 + 4);
+    else {
+      g.fillStyle = color(p.color);
+      g.fillText(text, Math.min(x1 + 5, w - g.measureText(text).width - 4), y + rowH / 2 + 4);
+    }
+  });
+}
