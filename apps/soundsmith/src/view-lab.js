@@ -49,10 +49,17 @@ export function LabView(root, app) {
   const useChips = h('div', { class: 'use-chips', role: 'group', 'aria-label': '쓰임새' });
   const kindChips = h('div', { class: 'use-chips kind-chips', role: 'group', 'aria-label': '종류' });
   const cards = h('div', { class: 'cards' });
-  const pick = h('section', { class: 'lab-pick', 'aria-labelledby': 'lab-pick-h' },
+  // 음색 찾기 (이름·설명·종류) + 처음엔 두 줄만 보이고 '모두 보기'로 펼침
+  const search = h('input', { type: 'search', class: 'text-input lab-search', placeholder: '음색 찾기 — 예: 패드, 오르간, 따뜻', 'aria-label': '음색 찾기 (이름·설명)', autocomplete: 'off', spellcheck: 'false' });
+  let query = '';
+  let expanded = false;
+  search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); renderPick(); });
+  const moreBtn = h('button', { type: 'button', class: 'quiet lab-more', onclick: () => { expanded = !expanded; renderPick(); if (!expanded) pick.scrollIntoView({ block: 'start' }); } });
+  const emptyNote = h('p', { class: 'panel-hint lab-empty', hidden: true });
+  const pick = h('section', { class: 'lab-pick', id: 'lab-pick', 'aria-labelledby': 'lab-pick-h' },
     h('div', { class: 'lab-head' }, h('h2', { id: 'lab-pick-h' }, '어떤 자리에 쓸까요?'), useChips),
-    kindChips,
-    cards);
+    h('div', { class: 'lab-find' }, search, kindChips),
+    cards, emptyNote, moreBtn);
   const KINDS = [{ id: 'all', label: '모든 종류' }, ...CATEGORIES, { id: 'hybrid', label: '겹친 음색' }];
   const kindOk = (patch) => kind === 'all' || (kind === 'hybrid' ? patch.layers.length > 0 : patch.category === kind);
 
@@ -65,11 +72,25 @@ export function LabView(root, app) {
       type: 'button', class: 'chip-btn use-chip kind-chip', 'aria-pressed': String(k.id === kind), dataset: { kind: k.id },
       onclick: () => { kind = k.id; renderPick(); },
     }, k.label)));
-    const mine = use === 'all' ? app.userPresets.filter((u) => kindOk(u.patch)) : [];
-    const list = FACTORY.filter((f) => (use === 'all' || f.uses.includes(use)) && kindOk(f.patch));
-    cards.replaceChildren(
-      ...mine.map((u) => card(u, '내 음색', true)),
-      ...list.map((f) => card(f, f.desc, false)));
+    const hit = (patch, desc) => !query || `${patch.name} ${desc ?? ''} ${patch.category ?? ''}`.toLowerCase().includes(query);
+    const mine = use === 'all' ? app.userPresets.filter((u) => kindOk(u.patch) && hit(u.patch, '내 음색')) : [];
+    const list = FACTORY.filter((f) => (use === 'all' || f.uses.includes(use)) && kindOk(f.patch) && hit(f.patch, f.desc));
+    let all = [...mine.map((u) => ({ entry: u, desc: '내 음색', mine: true })), ...list.map((f) => ({ entry: f, desc: f.desc, mine: false }))];
+    // 거르지 않았으면 두 줄만 (지금 고른 음색은 늘 보이게)
+    const cols = cards.clientWidth ? getComputedStyle(cards).gridTemplateColumns.split(' ').filter(Boolean).length : 4;
+    const limit = use === 'all' && kind === 'all' && !query && !expanded ? cols * 2 : Infinity;
+    const total = all.length;
+    if (all.length > limit) {
+      const shown = all.slice(0, limit);
+      const cur = all.find((x) => x.entry.id === app.presetId);
+      if (cur && !shown.includes(cur)) shown[limit - 1] = cur;
+      all = shown;
+    }
+    cards.replaceChildren(...all.map((x) => card(x.entry, x.desc, x.mine)));
+    emptyNote.hidden = total > 0;
+    emptyNote.textContent = `'${search.value.trim()}' 에 맞는 음색이 없어요. 다른 말로 찾거나 종류를 '모든 종류'로 바꿔 보세요.`;
+    moreBtn.hidden = !expanded && !(total > limit);
+    moreBtn.textContent = expanded ? '줄이기 ▴' : `모두 보기 (${total}) ▾`;
   }
 
   function card(entry, desc, mine) {
@@ -152,7 +173,7 @@ export function LabView(root, app) {
     }
   });
 
-  const shape = h('section', { class: 'lab-shape', 'aria-label': '다듬기' },
+  const shape = h('section', { class: 'lab-shape', id: 'lab-shape', 'aria-label': '다듬기' },
     h('div', { class: 'lab-head' }, shapeTitle, h('div', { class: 'btn-row' }, undoBtn, resetBtn)),
     summary,
     h('div', { class: 'macro-row' }, ...macroEls),
@@ -397,14 +418,33 @@ export function LabView(root, app) {
   editors.fx = organ.fxEditor;
 
   const sourceSeg = ctl.seg('source', { label: '소리 재료' });
-  const detail = h('section', { class: 'lab-detail', 'aria-labelledby': 'lab-detail-h' },
+  const detail = h('section', { class: 'lab-detail', id: 'lab-detail', 'aria-labelledby': 'lab-detail-h' },
     h('div', { class: 'lab-head' }, h('h2', { id: 'lab-detail-h' }, '자세히 조절'), h('p', { class: 'panel-hint' }, '소리 흐름의 상자를 눌러 고칠 곳을 고르세요.')),
     sourceSeg,
     h('div', { class: 'flow-wrap' }, flow),
     editor);
 
   const hybrid = HybridSection(app, { padSelect: padSel });
-  root.append(h('div', { class: 'lab' }, pick, hybrid.el, shape, detail));
+  hybrid.el.id = 'lab-hybrid';
+  // 구역 바로가기: 탭 아래 붙어 있고, 지금 보고 있는 구역에 불이 들어온다
+  const SECTIONS = [['pick', '고르기', pick], ['hybrid', '겹치기·나누기', hybrid.el], ['shape', '다듬기', shape], ['detail', '자세히', detail]];
+  const navBtns = SECTIONS.map(([id, label, el]) => h('button', { type: 'button', class: 'lab-nav-btn', dataset: { sec: id }, onclick: () => go(id) }, label));
+  const nav = h('nav', { class: 'lab-nav', 'aria-label': '실험실 구역' }, ...navBtns);
+  function go(id) {
+    const el = SECTIONS.find((x) => x[0] === id)?.[2];
+    el?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  }
+  const seen = new Map();
+  if (typeof IntersectionObserver !== 'undefined') {
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) seen.set(e.target, e.isIntersecting ? e.intersectionRect.height : 0);
+      let best = null;
+      for (const [, , el] of SECTIONS) if ((seen.get(el) ?? 0) > (seen.get(best) ?? 0)) best = el;
+      for (const b of navBtns) b.setAttribute('aria-current', String(SECTIONS.find((x) => x[0] === b.dataset.sec)[2] === best));
+    }, { threshold: [0, 0.1, 0.25, 0.5, 0.75, 1] });
+    for (const [, , el] of SECTIONS) io.observe(el);
+  }
+  root.append(nav, h('div', { class: 'lab' }, pick, hybrid.el, shape, detail));
 
   // ---- 소리 흐름 그림 ----
   function flowNodes() {
@@ -497,11 +537,14 @@ export function LabView(root, app) {
   app.on('presets', renderPick);
   app.on('sample', () => renderFlow());
   app.on('resize', () => { editors[node]?.draw?.(); hybrid.draw(); });
-  app.on('show:lab', () => requestAnimationFrame(() => sync({ keepMacros: true })));
+  app.on('show:lab', () => requestAnimationFrame(() => { sync({ keepMacros: true }); renderPick(); }));
   sync();
+  app.on('resize', () => { if (!expanded) renderPick(); });
   return {
     sync,
     sampleSlot,
+    /** 구역으로 가기: 'pick' | 'hybrid' | 'shape' | 'detail' */
+    go,
     /** 다른 곳(옛 #sampler 주소 등)에서 샘플 편집을 바로 열 때 */
     openSample() {
       if (app.patch.source !== 'sample') app.setParam('source', 'sample', 'change');

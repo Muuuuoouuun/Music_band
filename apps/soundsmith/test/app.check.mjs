@@ -61,12 +61,23 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   await page.keyboard.down('d');
   await page.waitForTimeout(150);
   r.voicesHeld = (await S(page)).voices;
+  await page.keyboard.down('g');
+  await page.waitForTimeout(60);
+  r.chordName = await page.textContent('.kbd-chord');
+  await page.keyboard.up('g');
   await page.keyboard.up('a');
   await page.keyboard.up('d');
   await page.keyboard.press('4');
   r.digit4 = (await S(page)).presetId;
   await page.locator('.pad', { hasText: '교회 오르간' }).click();
   r.padClick = (await S(page)).presetId;
+  r.guide = await page.textContent('.guide-head h2');
+  // 건반 접기·펴기
+  const dock0 = await page.evaluate(() => document.getElementById('dock').getBoundingClientRect().height);
+  await page.click('.kbd-fold');
+  const dock1 = await page.evaluate(() => document.getElementById('dock').getBoundingClientRect().height);
+  await page.click('.kbd-fold');
+  r.kbdFold = dock1 < dock0 * 0.5;
   const before = await S(page);
   const box = await boxOf(page, '.xy');
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -99,6 +110,11 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   r.cardPick = (await S(page)).presetId;
   r.summary = await page.textContent('.summary');
   await page.locator('.use-chip', { hasText: '전체' }).click();
+  // 음색 찾기·접기
+  r.labCollapsed = await page.locator('.cards .card').count();
+  await page.fill('.lab-search', '오르간');
+  r.labSearch = await page.locator('.cards .card').count();
+  await page.fill('.lab-search', '');
   await shot('lab');
   r.labOverflow = await overflow();
   const c0 = (await S(page)).cutoff;
@@ -364,6 +380,16 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   r.pitchStrip = /A4 442\.0 Hz/.test(await page.textContent('.pitch-read'));
   r.tuningOverflow = await overflow();
   await shot('tuning');
+  // 도움말·기능 찾기: ? 키 → '반주' → 바로 가기 / 지금 음색 이름 → 실험실 다듬기
+  await page.locator('body').press('?');
+  await page.fill('.help-find', '반주 만들기');
+  await page.locator('.help-go').first().click();
+  await page.waitForTimeout(400);
+  r.helpGo = await page.evaluate(() => `${window.soundsmith.tab}|${window.soundsmith.looper.arranger.isOpen}|${document.querySelector('dialog.help').open}`);
+  await page.click('#now-edit');
+  await page.waitForTimeout(700);
+  r.nowEdit = await page.evaluate(() => `${window.soundsmith.tab}|${document.querySelector('.lab-nav-btn[aria-current="true"]')?.dataset.sec}`);
+  r.navOverflow = await overflow();
   await page.close();
 }
 
@@ -378,6 +404,12 @@ for (const [name, r] of Object.entries(results)) {
   expect(r.startTab === 'stage', '첫 화면');
   expect(r.running, '소리 켜기');
   expect(r.voicesHeld >= 2, '두 음 동시');
+  expect(r.chordName === 'C', `건반 코드 이름 ${r.chordName}`);
+  expect(/[234]\/4/.test(r.guide), `처음 안내 ${r.guide}`);
+  expect(r.kbdFold, '건반 접기');
+  expect(r.labCollapsed >= 4 && r.labCollapsed < 42 && r.labSearch >= 5 && r.labSearch < 12, `음색 찾기·접기 ${r.labCollapsed}/${r.labSearch}`);
+  expect(r.helpGo === 'stage|true|false', `도움말 바로 가기 ${r.helpGo}`);
+  expect(r.nowEdit === 'lab|shape', `지금 음색 → 다듬기 ${r.nowEdit}`);
   expect(r.digit4 === 'dx-ep', '숫자 키 4');
   expect(r.padClick === 'church-organ', '패드 누르기');
   expect(r.xyBrighter, '밝기×공간 판');

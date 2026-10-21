@@ -131,7 +131,10 @@ export function LooperView(root, app) {
     arranger.open(on);
     arrBtn.setAttribute('aria-pressed', String(on));
     arrBtn.setAttribute('aria-expanded', String(on));
-    if (on) requestAnimationFrame(() => arranger.el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+    if (on) {
+      app.emit('arranger');
+      requestAnimationFrame(() => arranger.el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+    }
   }
   arrBtn.addEventListener('click', () => openArranger());
 

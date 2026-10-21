@@ -20,7 +20,9 @@
       </div>
       <div class="now">
         <span class="now-label">지금 음색</span>
-        <strong id="now-patch">워십 패드</strong>
+        <button type="button" class="now-btn" id="now-edit" title="이 음색을 실험실에서 고치기">
+          <strong id="now-patch">워십 패드</strong><span class="now-go" aria-hidden="true">고치기 ›</span>
+        </button>
         <span class="chip" id="now-tuning">A4 440 · 평균율</span>
       </div>
       <canvas class="scope" id="scope" width="240" height="56" aria-label="출력 파형"></canvas>
@@ -33,10 +35,10 @@
           <input type="range" id="master" min="0" max="100" value="85" aria-label="마스터 볼륨">
         </label>
         <button type="button" class="quiet" id="panic" title="울리고 있는 소리를 모두 멈춤">모두 멈춤</button>
+        <button type="button" class="quiet help-btn" id="help-btn" title="기능 찾기·단축키 (? 키)" aria-haspopup="dialog">? <span class="help-label">도움말</span></button>
       </div>
     </header>
 
-    <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
 
     <nav class="tabs" aria-label="화면">
       <button type="button" class="tab" data-tab="stage" aria-controls="view-stage">예배 무대</button>
@@ -54,6 +56,7 @@
   </div>
 
   <footer class="dock" id="dock" aria-label="건반"></footer>
+  <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
 
   <script type="module" src="src/app.js"></script>
 </body>

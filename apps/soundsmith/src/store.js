@@ -1,7 +1,7 @@
 // 이 브라우저에만 남는 값(내 음색, 튜닝, 마지막 화면, 톤 레퍼런스)과 파일 저장.
 // 저장이 막힌 환경(사생활 보호 창 등)에서도 앱은 그대로 동작한다.
 
-const KEYS = { presets: 'soundsmith.presets.v1', tuning: 'soundsmith.tuning.v1', patch: 'soundsmith.patch.v1', stage: 'soundsmith.stage.v1', tone: 'soundsmith.tone.v1' };
+const KEYS = { presets: 'soundsmith.presets.v1', tuning: 'soundsmith.tuning.v1', patch: 'soundsmith.patch.v1', stage: 'soundsmith.stage.v1', tone: 'soundsmith.tone.v1', ui: 'soundsmith.ui.v1' };
 
 export function load(name, fallback) {
   try {

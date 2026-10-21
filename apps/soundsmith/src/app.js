@@ -8,6 +8,7 @@ import { bakeSample } from './sample.js';
 import { Library } from './library.js';
 import { Keyboard } from './keyboard.js';
 import { drawScope } from './draw.js';
+import { h } from './ui.js';
 import * as store from './store.js';
 import { StageView } from './view-stage.js';
 import { LabView } from './view-lab.js';
@@ -15,6 +16,7 @@ import { SamplerView } from './view-sampler.js';
 import { LooperView } from './view-looper.js';
 import { ToneView } from './view-tone.js';
 import { PadsView } from './view-pads.js';
+import { GuideCard, HelpDialog } from './guide.js';
 
 const TABS = ['stage', 'lab', 'tone', 'pads'];
 
@@ -64,13 +66,18 @@ class App {
     this.frames.add(fn);
   }
 
-  notice(text, kind = 'info') {
+  /** 화면 위에 잠깐 떠 있는 알림. action = { label, run } 을 주면 바로 가는 단추를 붙인다 (예: '무대로 가기') */
+  notice(text, kind = 'info', action = null) {
     const el = document.getElementById('notice');
-    el.textContent = text;
+    const hide = () => { el.hidden = true; };
+    const parts = [h('span', { class: 'notice-text' }, text)];
+    if (action) parts.push(h('button', { type: 'button', class: 'small notice-act', onclick: () => { hide(); action.run(); } }, action.label));
+    parts.push(h('button', { type: 'button', class: 'quiet small notice-x', 'aria-label': '알림 닫기', onclick: hide }, '×'));
+    el.replaceChildren(...parts);
     el.dataset.kind = kind;
     el.hidden = false;
     clearTimeout(this.noticeTimer);
-    this.noticeTimer = setTimeout(() => { el.hidden = true; }, kind === 'bad' ? 7000 : 4500);
+    this.noticeTimer = setTimeout(hide, action ? 8000 : kind === 'bad' ? 7000 : 4500);
   }
 
   async ensureAudio() {
@@ -160,12 +167,12 @@ class App {
       entry = this.findPreset(this.presetId);
     }
     this.stage.assignPad(k, entry.id);
-    this.notice(`'${entry.patch.name}' 음색을 예배 무대의 패드 ${k + 1}에 올렸어요.`, 'good');
+    this.notice(`'${entry.patch.name}' 음색을 예배 무대의 패드 ${k + 1}에 올렸어요.`, 'good', { label: '무대로 가기', run: () => this.showTab('stage') });
   }
 
   sendToTrack(i) {
     this.looper.sendSound(i);
-    this.notice(`루퍼 트랙 ${i + 1}에 '${this.patch.name}' 음색을 넣었어요. 예배 무대의 루퍼에서 '트랙 펼치기'를 누르고 그 트랙을 골라 녹음하세요.`, 'good');
+    this.notice(`루퍼 트랙 ${i + 1}에 '${this.patch.name}' 음색을 넣었어요. 그 트랙을 골라 녹음하면 이 음색으로 쌓여요.`, 'good', { label: '루퍼 열기', run: () => { this.showTab('stage'); this.stage.openLooper(); } });
   }
 
   rename(name) {
@@ -341,6 +348,7 @@ app.keyboard = new Keyboard(document.getElementById('dock'), {
   noteOff: (m) => app.noteOff(m),
   sustain: (on) => app.sustain(on),
   describe: (m, v) => app.describe(m, v),
+  transpose: () => app.tuning.transpose,
   mod: (v) => {
     const fast = v > 0.5;
     if (app.rotaryUsed && fast !== app.patch.fx.rotaryFast) app.setRotaryFast(fast);
@@ -356,6 +364,16 @@ document.getElementById('power').addEventListener('click', async () => {
   } else await app.ensureAudio();
 });
 document.getElementById('panic').addEventListener('click', () => app.panic());
+// 길 찾기: 처음 안내(무대 맨 위), 도움말·기능 찾기(? 단추·? 키), 지금 음색 이름 → 실험실에서 고치기
+app.guide = GuideCard(app);
+document.getElementById('view-stage').prepend(app.guide.el);
+app.help = HelpDialog(app);
+document.getElementById('help-btn').addEventListener('click', () => app.help.open());
+document.getElementById('now-edit').addEventListener('click', () => {
+  if (app.tab === 'pads') return;
+  app.showTab('lab');
+  requestAnimationFrame(() => app.lab.go('shape'));
+});
 document.getElementById('master').addEventListener('input', (e) => app.studio.setMaster(Number(e.target.value) / 100));
 let resizeTimer;
 window.addEventListener('resize', () => {

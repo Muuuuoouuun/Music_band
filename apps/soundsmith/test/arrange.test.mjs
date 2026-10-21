@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseChord, parseChart, voiceChord, arrange, liftPoints, transposeName, voicingReason, parseChordPro, sectionKind, keyRef } from '../src/arrange.js';
+import { parseChord, parseChart, voiceChord, arrange, liftPoints, transposeName, voicingReason, parseChordPro, sectionKind, keyRef, nameChord } from '../src/arrange.js';
 
 const pc = (m) => ((m % 12) + 12) % 12;
 
@@ -126,4 +126,19 @@ test('band2sheet ChordPro: 프리코러스는 후렴이 아니고, 단조는 나
   assert.equal(keyRef('Bb'), 10);
   assert.equal(keyRef('Ebmaj7'), 3);
   assert.equal(keyRef('?'), null);
+});
+
+test('건반에서 친 음으로 코드 이름 알아내기', () => {
+  assert.equal(nameChord([60, 64, 67]).name, 'C');
+  assert.equal(nameChord([64, 67, 72]).name, 'C/E');
+  assert.equal(nameChord([57, 60, 64, 67]).name, 'Am7');
+  assert.equal(nameChord([48, 62, 64, 67]).name, 'Cadd9');
+  assert.equal(nameChord([55, 60, 62]).name, 'Gsus4');
+  assert.equal(nameChord([52, 60, 67]).name, 'C/E');
+  assert.equal(nameChord([50, 55, 59, 62, 69]).name, 'Gadd9/D');
+  assert.equal(nameChord([50, 55, 62, 67, 69]).name, 'Dsus4');
+  assert.equal(nameChord([46, 58, 62, 65]).name, 'Bb');
+  assert.equal(nameChord([61, 65, 68], 3).name, 'Db');
+  assert.equal(nameChord([60]), null);
+  assert.equal(nameChord([60, 61, 62]), null);
 });

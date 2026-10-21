@@ -484,11 +484,13 @@ export function StageView(root, app) {
         h('div', { class: 'xy-ranges' },
           h('label', { for: xId }, '밝기'), xRange,
           h('label', { for: yId }, '공간'), yRange, centerBtn),
-        h('div', { class: 'stage-side-btns' }, holdBtn, nextSoundBtn))),
-    fxStrip,
-    h('div', { class: 'stage-lower' }, dronePanel, rotaryPanel),
+        h('div', { class: 'stage-side-btns' }, holdBtn, nextSoundBtn),
+        rotaryPanel)),
+    // 연주 중 자주 누르는 순서: 루퍼 → 전환 효과음 → 드론
     strip,
-    looperWrap);
+    looperWrap,
+    fxStrip,
+    dronePanel);
 
   // ---- 그리기 ----
   const presetOptions = (selected) => [
@@ -598,7 +600,7 @@ export function StageView(root, app) {
       h('span', { class: 'led', 'aria-hidden': 'true' }));
     rotaryNote.textContent = used
       ? `${fast ? '한 번 더 누르면 천천히 느려져요' : '누르면 혼부터 빨라져요'}. 건반의 모듈레이션 휠(CC1)도 같은 스위치예요.`
-      : '지금 음색에 로터리 스피커가 없어요. 오르간 음색(가스펠 오르간 등)을 고르면 켜져요.';
+      : '로터리 스피커는 오르간 음색(가스펠 오르간 등)을 고르면 여기 나타나요.';
   }
 
   function render() {
@@ -636,6 +638,14 @@ export function StageView(root, app) {
     render,
     selectSong,
     currentSong: () => st.songs[st.current] ?? null,
+    /** 무대의 한 부분으로 가기: 'set' | 'pads' | 'fx' | 'drone' | 'looper' */
+    focus(part) {
+      if (part === 'set') { editSet = true; render(); }
+      if (part === 'looper') setLooperOpen(true);
+      const el = { set: setEditor, pads: padsGrid, fx: fxStrip, drone: dronePanel, looper: looperWrap }[part];
+      requestAnimationFrame(() => el?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
+    },
+    pickPad: (k) => choose(entryFor(st.pads[k])),
     pads: st.pads,
     looperSlot,
     openLooper: () => setLooperOpen(true),

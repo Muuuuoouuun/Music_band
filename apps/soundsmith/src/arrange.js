@@ -208,6 +208,36 @@ export function parseChordPro(text) {
   return out;
 }
 
+// 건반에서 친 음 → 코드 이름 (같은 음 묶음이 여럿으로 읽히면 단순한 쪽, 베이스가 근음인 쪽을 고른다)
+const NAME_ORDER = ['', 'm', '7', 'maj7', 'm7', 'sus4', 'sus2', 'add9', 'madd9', '6', 'm6', 'dim', 'aug', 'm7b5', 'dim7', '9', 'maj9', 'm9', '7sus4', 'mM7', '5'];
+const NAMES_MIXED = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+/**
+ * 누르고 있는 음들(midi) → { name: 'Cmaj7/E', root, bass, notes } 또는 코드가 아니면 null.
+ * key 를 주면 그 조에 맞춰 샵·플랫으로 적는다 (없으면 C# Eb F# Ab Bb).
+ */
+export function nameChord(midis, key = null) {
+  const sorted = [...new Set(midis)].sort((a, b) => a - b);
+  const pcs = [...new Set(sorted.map(pcOf))];
+  if (pcs.length < 2) return null;
+  const bass = pcOf(sorted[0]);
+  const spell = (pc) => (key == null ? NAMES_MIXED[pc] : pcName(pc, key));
+  let best = null;
+  for (const root of pcs) {
+    const rel = new Set(pcs.map((pc) => pcOf(pc - root)));
+    for (const [suffix, tones] of QUALITIES) {
+      const want = new Set(tones.map(pcOf));
+      if (want.size !== rel.size || ![...want].every((t) => rel.has(t))) continue;
+      const rank = NAME_ORDER.indexOf(suffix);
+      const score = (root === bass ? 0 : 100) + (rank < 0 ? 50 : rank);
+      if (!best || score < best.score) best = { score, root, suffix };
+    }
+  }
+  if (!best) return null;
+  const name = `${spell(best.root)}${best.suffix}${best.root === bass ? '' : `/${spell(bass)}`}`;
+  return { name, root: best.root, bass, notes: sorted };
+}
+
 /**
  * ChordPro 섹션의 종류: band2sheet 는 절·후렴·브리지를 {start_of_…} 로, 그 밖(인트로·프리코러스…)은 {comment: …} 로 적는다.
  * 'Pre-Chorus' 는 후렴이 아니다.
