@@ -103,3 +103,11 @@ test('패턴 2마디: 앞 마디를 베껴 32칸으로', () => {
   assert.deepEqual(two[0].slice(STEPS), one[0]);
   assert.deepEqual(two[1].slice(0, STEPS), one[1]);
 });
+
+test('조각 이름 짐작: 이어지는 베이스를 격자로 자른 가운데 조각은 햇이 아니다', () => {
+  const sr = 44100;
+  const bass = Float32Array.from({ length: sr * 2 }, (_, i) => 0.7 * Math.sin((2 * Math.PI * 110 * i) / sr));
+  const slices = gridStarts(bass.length, 16).map((s, i, a) => ({ start: s, end: a[i + 1] ?? bass.length }));
+  const kinds = slices.slice(1).map((x) => guessKind(bass, sr, x.start, x.end).kind);
+  assert.ok(kinds.every((k) => k !== 'hat' && k !== 'open-hat'), kinds.join(','));
+});

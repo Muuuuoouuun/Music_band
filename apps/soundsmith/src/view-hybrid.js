@@ -68,7 +68,7 @@ export function HybridSection(app, { padSelect }) {
     } else if (app.patch.layers.length) {
       // 마지막 겹친 음색을 왼손(C4 아래)으로
       const k = app.patch.layers.length - 1;
-      commit({ ...app.patch, keys: { ...app.patch.keys, lo: 60 }, layers: app.patch.layers.map((l, i) => (i === k ? { ...l, lo: 0, hi: 59 } : l)) });
+      commit({ ...app.patch, keys: { ...app.patch.keys, lo: 60, hi: Math.max(app.patch.keys.hi, 72) }, layers: app.patch.layers.map((l, i) => (i === k ? { ...l, lo: 0, hi: 59 } : l)) });
     } else {
       const bass = factoryById('moog-bass');
       commit({ ...app.patch, keys: { ...app.patch.keys, lo: 60, hi: 127 }, layers: [{ preset: bass.id, patch: bass.patch, level: 0.85, lo: 0, hi: 59 }] });
@@ -84,13 +84,13 @@ export function HybridSection(app, { padSelect }) {
     const x = e.clientX - r.left;
     const y = e.clientY - r.top;
     const sp = splitPoint();
-    if (sp && geo.splitX != null && Math.abs(x - geo.splitX) < 9 && y > geo.keyTop - 8) drag = { kind: 'split', layer: sp.layer };
+    // 나누는 점(흰 점선) 위는 어느 높이에서 잡아도 나누는 점을 옮긴다 (두 막대 끝이 같이 움직이게)
+    if (sp && geo.splitX != null && Math.abs(x - geo.splitX) < 9) drag = { kind: 'split', layer: sp.layer };
     else {
       const row = geo.rows.find((rw) => y >= rw.y0 - 3 && y <= rw.y1 + 3);
       if (!row) return;
       if (Math.abs(x - row.x0) < 10) drag = { kind: 'lo', index: row.index };
       else if (Math.abs(x - row.x1) < 10) drag = { kind: 'hi', index: row.index };
-      else if (sp && geo.splitX != null && Math.abs(x - geo.splitX) < 9) drag = { kind: 'split', layer: sp.layer };
       else return;
     }
     e.preventDefault();
@@ -101,7 +101,7 @@ export function HybridSection(app, { padSelect }) {
     const x = e.clientX - strip.getBoundingClientRect().left;
     const list = parts();
     if (drag.kind === 'split') {
-      const at = Math.max(22, geo.nearest(x, 'lo'));
+      const at = Math.min(app.patch.keys.hi, Math.max(22, geo.nearest(x, 'lo')));
       if (at === app.patch.keys.lo) return;
       commit({ ...app.patch, keys: { ...app.patch.keys, lo: at }, layers: app.patch.layers.map((ly, k) => (k === drag.layer ? { ...ly, hi: at - 1, lo: Math.min(ly.lo, at - 1) } : ly)) }, 'input');
     } else {
@@ -126,7 +126,8 @@ export function HybridSection(app, { padSelect }) {
     const sp = splitPoint();
     if (!sp || !['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
     e.preventDefault();
-    const at = Math.max(22, Math.min(108, sp.at + (e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 12 : 1)));
+    const at = Math.max(22, Math.min(108, app.patch.keys.hi, sp.at + (e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 12 : 1)));
+    if (at === sp.at) return;
     commit({ ...app.patch, keys: { ...app.patch.keys, lo: at }, layers: app.patch.layers.map((ly, k) => (k === sp.layer ? { ...ly, hi: at - 1, lo: Math.min(ly.lo, at - 1) } : ly)) });
   });
 

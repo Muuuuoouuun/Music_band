@@ -20,6 +20,14 @@ export function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+/** 매 프레임 그리는 곳에서: 값이 바뀔 때만 DOM 을 고친다 (같은 값을 다시 써도 브라우저는 스타일을 다시 계산함) */
+export function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text;
+}
+export function setAttr(el, name, value) {
+  if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+}
+
 export function panel(title, { hint, cls = '', actions } = {}, ...body) {
   return h('section', { class: `panel ${cls}` },
     h('header', { class: 'panel-head' }, h('h3', {}, title), hint ? h('p', { class: 'panel-hint' }, hint) : null, actions ?? null),

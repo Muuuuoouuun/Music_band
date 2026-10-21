@@ -63,6 +63,8 @@ export function voiceChord(chord, { wide = false, prev = null, low = 52, high = 
   // 베이스는 E2–D#3 안에서 (너무 낮으면 탁해서 C·C#·D·D# 는 한 옥타브 위)
   const bassNote = 36 + chord.bass + (chord.bass < 4 ? 12 : 0);
   let colors = chord.tones.map((t) => t % 12);
+  // 좁게: 9·13 처럼 한 옥타브 위에 적힌 음도 근음 위로 차례로 놓아 가깝게 쌓는다 (Cadd9 → C D E G)
+  if (!wide) colors = [...new Set(colors)].sort((a, b) => a - b);
   if (wide && colors.length === 3 && colors.includes(4) && colors.includes(7) && !colors.includes(2)) colors = [0, 7, 2, 4]; // 장3화음은 add9 로 넓게
   if (wide && colors.length === 3 && colors.includes(3) && colors.includes(7)) colors = [0, 7, 10, 3]; // 단3화음은 m7 색
   const pcs = [...new Set(colors.map((t) => (chord.root + t) % 12))];
@@ -92,10 +94,11 @@ export function voiceChord(chord, { wide = false, prev = null, low = 52, high = 
 
 /**
  * 진행 + 스타일 → 루퍼 음표 [{ midi, velocity, t, dur, iter: -1, pass: 1, part: 'left'|'right' }] (t, dur 는 박).
- * widths: 마디마다 'narrow' | 'wide', styles: 마디마다 스타일 (없으면 style), variant: 다른 보이싱 번호.
+ * widths: 마디마다 'narrow' | 'wide', styles: 마디마다 스타일 (없으면 style), variant: 다른 보이싱 번호,
+ * eighth: 8분음표 길이(박) — 4/4·3/4 는 0.5, 6/8 처럼 8분음표가 한 박이면 1. 코드 자리에 { rest: true } 면 그 자리는 쉰다.
  * 돌려주는 배열에 voicings([{ bar, chord, left, right }]) 도 붙여 둔다 (미리 보기·이유 설명용).
  */
-export function arrange(bars, { style = 'pad', beatsPerBar = 4, wide = false, widths = null, styles = null, variant = 0 } = {}) {
+export function arrange(bars, { style = 'pad', beatsPerBar = 4, wide = false, widths = null, styles = null, variant = 0, eighth = 0.5 } = {}) {
   const notes = [];
   const voicings = [];
   let prev = null;
@@ -105,6 +108,7 @@ export function arrange(bars, { style = 'pad', beatsPerBar = 4, wide = false, wi
     const span = beatsPerBar / chords.length;
     const st = styles?.[b] ?? style;
     chords.forEach((chord, k) => {
+      if (!chord || chord.rest) return;
       const t0 = b * beatsPerBar + k * span;
       const isWide = widths ? widths[b] === 'wide' : wide;
       const v = voiceChord(chord, { wide: isWide, prev, variant });
@@ -117,16 +121,18 @@ export function arrange(bars, { style = 'pad', beatsPerBar = 4, wide = false, wi
         for (const m of v.right) add(m, t0, span - 0.05, 0.58);
       } else if (style === 'pulse') {
         left(() => { for (const m of v.left) add(m, t0, span - 0.05, 0.6); });
-        for (let e = 0; e < span * 2; e++) for (const m of v.right) add(m, t0 + e * 0.5, 0.42, e % 2 ? 0.45 : 0.62);
+        for (let e = 0; e < Math.round(span / eighth); e++) for (const m of v.right) add(m, t0 + e * eighth, eighth * 0.84, e % 2 ? 0.45 : 0.62);
       } else if (style === 'arp') {
         left(() => add(v.left[0], t0, span - 0.05, 0.6));
         const up = [...v.right, v.right[0] + 12];
-        for (let e = 0; e < span * 2; e++) add(up[e % up.length], t0 + e * 0.5, 0.48, 0.52 + (e % up.length === 0 ? 0.1 : 0));
+        for (let e = 0; e < Math.round(span / eighth); e++) add(up[e % up.length], t0 + e * eighth, eighth * 0.96, 0.52 + (e % up.length === 0 ? 0.1 : 0));
       } else {
         left(() => { for (const m of v.left) add(m, t0, span - 0.05, 0.6); });
-        for (let beat = 0; beat < span; beat++) {
-          const abs = k * span + beat;
-          if (abs % 2 === 1) for (const m of v.right) add(m, t0 + beat, 0.35, 0.62);
+        // 센박을 비우고 여린박에 짧게: 4/4 는 2·4박, 3/4 는 2·3박, 6/8 은 셋씩 묶어 첫 박 뒤.
+        // 이 코드가 차지하는 구간 안의 온박만 본다 (한 마디에 코드 둘·셋이어도)
+        const group = beatsPerBar % 3 === 0 ? 3 : 2;
+        for (let beat = Math.ceil(k * span - 1e-9); beat < (k + 1) * span - 1e-9; beat++) {
+          if (beat % group !== 0) for (const m of v.right) add(m, b * beatsPerBar + beat, 0.35, 0.62);
         }
       }
     });
@@ -200,6 +206,23 @@ export function parseChordPro(text) {
   }
   out.sections = out.sections.filter((x) => x.bars.length);
   return out;
+}
+
+/**
+ * ChordPro 섹션의 종류: band2sheet 는 절·후렴·브리지를 {start_of_…} 로, 그 밖(인트로·프리코러스…)은 {comment: …} 로 적는다.
+ * 'Pre-Chorus' 는 후렴이 아니다.
+ */
+export function sectionKind(s) {
+  if (['verse', 'chorus', 'bridge'].includes(s.kind)) return s.kind;
+  const t = String(s.name ?? '').toLowerCase();
+  if (/pre-?\s?chorus|프리/.test(t)) return 'other';
+  return /chorus|후렴/.test(t) ? 'chorus' : /bridge|브릿지|브리지/.test(t) ? 'bridge' : /verse|절/.test(t) ? 'verse' : 'other';
+}
+
+/** 조 이름 → 조표 기준 음 (단조는 나란한 장조: Em → 7(G)). 코드를 옮기거나 샵·플랫을 고를 때 쓴다. 못 읽으면 null */
+export function keyRef(text) {
+  const m = /^([A-G])([#b♯♭]?)(m(?!aj))?/.exec(String(text ?? '').trim());
+  return m ? (((PC[m[1]] + (m[2] === '#' || m[2] === '♯' ? 1 : m[2] ? -1 : 0) + (m[3] ? 3 : 0)) % 12) + 12) % 12 : null;
 }
 
 /** 후렴(넓게) 바로 앞 마디: 라이저를 놓기 좋은 곳 (마디 번호들, 0부터) */

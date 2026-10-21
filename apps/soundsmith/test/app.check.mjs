@@ -173,6 +173,21 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   await page.click('.hybrid >> text=나누기 풀기');
   await page.locator('.part-del').first().click();
   r.layersCleared = await page.evaluate(() => window.soundsmith.patch.layers.length === 0 && window.soundsmith.patch.keys.lo === 0);
+  // 메인을 한 옥타브 내린 채 나눴을 때: 왼손 건반을 떼도 오른손이 옮겨 친 같은 번호의 음은 계속 울린다
+  r.octaveNoteOff = await page.evaluate(() => {
+    const a = window.soundsmith;
+    const keep = a.patch;
+    const bass = a.findPreset('moog-bass').patch;
+    a.setPatch({ ...a.findPreset('worship-pad').patch, keys: { lo: 60, hi: 127, octave: -1 }, layers: [{ preset: 'moog-bass', patch: bass, on: true, octave: 0, level: 0.8, lo: 0, hi: 59 }] }, { phase: 'change' });
+    const live = a.live;
+    live.noteOn(71, 0.8);
+    live.noteOn(59, 0.8);
+    live.noteOff(59);
+    const ok = [...live.voices].some((v) => !v.released && v.midi === 59);
+    live.noteOff(71);
+    a.setPatch(keep, { phase: 'change' });
+    return ok;
+  });
   await page.locator('.kind-chip[data-kind="all"]').click();
   // 패드·루퍼로 보내기
   await page.click('text=무대 패드에 올리기');
@@ -273,7 +288,14 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   await cell.click();
   await page.click('.seq-undo');
   r.padUndo = await cell.getAttribute('data-v');
+  // 재생 중 1↔2마디를 바꿔도 칸을 건너뛰지 않는다
+  await page.click('.pads-seq .transport-btn >> nth=0');
+  await page.waitForTimeout(400);
+  const sch0 = await page.evaluate(() => window.soundsmith.pads.state.scheduled);
   await page.click('.seg-btn[data-bars="2"]');
+  const sch1 = await page.evaluate(() => window.soundsmith.pads.state.scheduled);
+  await page.click('.pads-seq .transport-btn >> nth=0');
+  r.padBarsNoSkip = sch1 - sch0 <= 2;
   r.padBars = await page.locator('.step-row.is-selected .step').count();
   await page.click('.chop-seg .seg-btn[data-mode="grid8"]');
   const n0s = await page.evaluate(() => window.soundsmith.pads.info().slices);
@@ -378,6 +400,7 @@ for (const [name, r] of Object.entries(results)) {
   expect(r.layers === '60|워십 패드:0-59', `겹치기 ${r.layers}`);
   expect(r.splitMoved === 59, `나누는 점 화살표 ${r.splitMoved}`);
   expect(r.layerOff && r.layersCleared, '파트 끄기·풀기');
+  expect(r.octaveNoteOff === true, '옥타브 옮긴 메인: 다른 건반을 떼도 안 끊김');
   expect(r.arr === '8|true|워십 패드|서브 베이스|3', `반주 ${r.arr}`);
   expect(/4 → 3/.test(r.arrWhy) && /베이스 B/.test(r.arrWhy), `보이싱 이유 ${r.arrWhy}`);
   expect(r.arrPreview === true, '반주 미리 듣기');
@@ -393,6 +416,7 @@ for (const [name, r] of Object.entries(results)) {
   expect(/패드 2 · 스네어 1/.test(r.padTitle), `고른 패드 ${r.padTitle}`);
   expect(r.padUndo === '1', '지운 칸 되돌리기');
   expect(r.padBars === 32, '2마디');
+  expect(r.padBarsNoSkip, '재생 중 2마디로 바꿔도 칸을 건너뛰지 않음');
   expect(r.padManual === '8|9', `직접 자르기 ${r.padManual}`);
   expect(r.padFx === '{"bits":12,"rate":26040,"noise":0.2,"wobble":0.15,"lofi":0.2}', `로파이 ${r.padFx}`);
   expect(r.padAssigned, '패드에 올리기');

@@ -287,13 +287,17 @@ export function guessKind(data, sr, start = 0, end = data.length) {
     back = x;
     if (i < 0) { e.lowPre += lp * lp; e.allPre += x * x; e.difPre += d * d; } else { e.low += lp * lp; e.all += x * x; e.dif += d * d; }
   }
-  const fresh = (k) => Math.max(0, e[k] / post - (pre ? e[`${k}Pre`] / pre : 0));
+  // 이어지는 소리 한가운데를 자른 조각(앞뒤가 거의 같음 — 전체도 높은 대역도 새로 생긴 게 없음)은
+  // 빼면 남는 게 없으니 그대로 본다. 킥 꼬리 위의 햇은 높은 대역이 새로 생기므로 여기 들지 않는다.
+  const rel = (k) => (e[k] / post - e[`${k}Pre`] / pre) / Math.max(1e-12, e[k] / post);
+  const steady = pre > 0 && rel('all') < 0.2 && rel('dif') < 0.2;
+  const fresh = (k) => (steady ? e[k] / post : Math.max(0, e[k] / post - (pre ? e[`${k}Pre`] / pre : 0)));
   const allNew = Math.max(1e-12, fresh('all'));
   const low = Math.min(1, fresh('low') / allNew);
   // 밝기: 미분 에너지 / 에너지 → 대략의 주파수 (사인이면 그 주파수, 흰 잡음이면 약 10 kHz)
   const zf = (sr / (2 * Math.PI)) * Math.sqrt(Math.min(4, fresh('dif') / allNew));
   // 울림: 10ms 창 크기에서 앞 소리 꼬리만큼 빼고, 최고의 1/4 밑으로 줄 때까지
-  const floor = pre ? Math.sqrt(e.allPre / pre) : 0;
+  const floor = pre && !steady ? Math.sqrt(e.allPre / pre) : 0;
   const win = Math.max(1, Math.round(sr * 0.01));
   const env = [];
   for (let i = 0; i < n; i += win) {

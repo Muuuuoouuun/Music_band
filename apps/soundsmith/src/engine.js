@@ -393,12 +393,11 @@ export class Instrument {
     });
     const p = this.patch;
     if (midi < p.keys.lo || midi > p.keys.hi) return;
-    // 메인 음색도 옥타브를 옮길 수 있다 (건반 번호만 바꿔 연주; 놓을 때도 같은 번호로)
-    if (p.keys.octave) {
-      const m = midi + 12 * p.keys.octave;
-      this.mainShift.set(midi, m);
-      midi = m;
-    }
+    // 메인 음색도 옥타브를 옮길 수 있다 (건반 번호만 바꿔 연주). 메인을 울린 건반만 적어 두어,
+    // 놓을 때 같은 번호로 끄고 메인 범위 밖 건반을 놓아도 옮겨진 다른 음을 끄지 않게 한다
+    const key = midi;
+    midi += 12 * (p.keys.octave || 0);
+    this.mainShift.set(key, midi);
     this.blocks.lofi?.gate(true, when);
     if (p.mono) {
       this.monoStack = this.monoStack.filter((m) => m !== midi).concat(midi);
@@ -429,11 +428,10 @@ export class Instrument {
       part.inst.noteOff(this.partHeld.get(key), when);
       this.partHeld.delete(key);
     });
-    if (this.mainShift.has(midi)) {
-      const m = this.mainShift.get(midi);
-      this.mainShift.delete(midi);
-      midi = m;
-    }
+    if (!this.mainShift.has(midi)) return;
+    const m = this.mainShift.get(midi);
+    this.mainShift.delete(midi);
+    midi = m;
     const v = this.held.get(midi);
     this.held.delete(midi);
     if (this.patch.mono) {

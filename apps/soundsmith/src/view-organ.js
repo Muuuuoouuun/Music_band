@@ -1,7 +1,7 @@
 // 오르간 · EP 패널 (시안 H2): 실험실의 '오르간 드로바' 상자와 '이펙트' 상자.
 // 빨리 고르기(오르간 5 · EP 3), 톤휠 드로바(당긴 만큼 번호가 보이는 막대, 등록값 입력), 퍼커션,
 // EP 이펙트(좌우 트레몰로 그림·박에 맞춤, 페이저, 앰프), 로터리 스피커(돌아가는 혼·드럼, 가속 곡선).
-import { h, panel, controlGroup } from './ui.js';
+import { h, panel, controlGroup, setText } from './ui.js';
 import { DRAWBAR_LABELS, ROTOR } from './fx.js';
 import { factoryById } from './presets.js';
 
@@ -88,8 +88,11 @@ export function OrganPanels(app, bind) {
         h('div', { class: 'rotary-mid' }, big, h('p', { class: 'panel-hint' }, '예배 무대의 큰 버튼, 건반의 모듈레이션 휠(CC1)도 같은 스위치예요.')),
         h('div', { class: 'rotary-chart' }, h('span', { class: 'label' }, '빨라지는 시간'), chart),
         ctl.knobs(['fx.rotary'], { size: 'md' })));
+    // 화면 밖으로 스크롤되면 그림을 멈춘다 (속도 계산은 돌아와서 이어감)
+    let onScreen = true;
+    if (typeof IntersectionObserver !== 'undefined') new IntersectionObserver(([e]) => { onScreen = e.isIntersecting; }).observe(el);
     const frame = (time) => {
-      if (!el.isConnected || el.closest('[hidden]')) { sim.last = 0; return; }
+      if (!el.isConnected || !onScreen || el.closest('[hidden]')) { sim.last = 0; return; }
       const dt = sim.last ? Math.min(0.1, (time - sim.last) / 1000) : 0;
       sim.last = time;
       const fx = app.patch.fx;
@@ -101,10 +104,11 @@ export function OrganPanels(app, bind) {
         part.speed += (target - part.speed) * (1 - Math.exp(-dt / tau));
         part.angle = (part.angle + part.speed * dt * 360) % 360;
       }
+      if (sim.horn.speed < 1e-3 && sim.drum.speed < 1e-3) return; // 멈춘 로터는 다시 그리지 않음
       horn.style.transform = `rotateY(${sim.horn.angle}deg)`;
       drum.style.transform = `rotateY(${sim.drum.angle}deg)`;
-      hornHz.textContent = `혼 ${sim.horn.speed.toFixed(1)} Hz`;
-      drumHz.textContent = `드럼 ${sim.drum.speed.toFixed(1)} Hz`;
+      setText(hornHz, `혼 ${sim.horn.speed.toFixed(1)} Hz`);
+      setText(drumHz, `드럼 ${sim.drum.speed.toFixed(1)} Hz`);
     };
     animators.push(frame);
     const render = () => {

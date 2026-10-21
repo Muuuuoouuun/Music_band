@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseChord, parseChart, voiceChord, arrange, liftPoints, transposeName, voicingReason, parseChordPro } from '../src/arrange.js';
+import { parseChord, parseChart, voiceChord, arrange, liftPoints, transposeName, voicingReason, parseChordPro, sectionKind, keyRef } from '../src/arrange.js';
 
 const pc = (m) => ((m % 12) + 12) % 12;
 
@@ -99,4 +99,31 @@ test('band2sheet ChordPro 읽기: 섹션·마디·코드, 빈 마디 [/] 는 앞
   assert.deepEqual(cp.sections.map((x) => `${x.kind}:${x.name}:${x.bars.length}`), ['verse:1절:4', 'other:간주:2', 'chorus:후렴:4']);
   assert.deepEqual(cp.sections[0].bars[3], ['Bm7', 'A']);
   assert.deepEqual(cp.sections[2].bars[3], ['Asus4', 'A']);
+});
+
+test('반주 점검: 좁게 add9 는 가깝게, 6/8 펄스는 8분마다, 3/4 오르간 두 코드, N.C. 는 쉼', () => {
+  for (const name of ['Aadd9', 'Bbadd9', 'Cadd9', 'Dmaj9', 'Em9']) {
+    const v = voiceChord(parseChord(name));
+    assert.ok(v.right.at(-1) - v.right[0] <= 12, `${name} ${v.right}`);
+  }
+  const c = parseChord('C');
+  const p68 = arrange([[c]], { style: 'pulse', beatsPerBar: 6, eighth: 1 }).filter((n) => n.part === 'right');
+  assert.equal(new Set(p68.map((n) => n.t)).size, 6);
+  const org = arrange([[parseChord('Gsus4'), parseChord('G')]], { style: 'organ', beatsPerBar: 3 });
+  const rightAt = (t) => org.filter((n) => n.part === 'right' && Math.abs(n.t - t) < 1e-9).length;
+  assert.ok(rightAt(1) > 0, '3/4 의 2박(1)에 첫 코드');
+  assert.ok(org.some((n) => n.part === 'right' && voiceChord(parseChord('G')).right.includes(n.midi) && n.t >= 1.5), '두 번째 코드도 오른손이 나온다');
+  const rest = arrange([[c], [{ name: 'N.C.', rest: true }], [{ name: 'N.C.', rest: true }, c]], { style: 'pad' });
+  assert.ok(!rest.some((n) => n.t >= 4 && n.t < 10), 'N.C. 자리는 조용');
+  assert.ok(rest.some((n) => n.t === 10), 'N.C. 다음 반 마디에 C');
+});
+
+test('band2sheet ChordPro: 프리코러스는 후렴이 아니고, 단조는 나란한 장조 기준', () => {
+  const song = parseChordPro('{key: Em}\n{comment: Pre-Chorus 1}\n[Am] | [D] |\n{start_of_chorus: Chorus 1}\n[G] | [N.C.] [C] |\n{end_of_chorus}');
+  assert.deepEqual(song.sections.map(sectionKind), ['other', 'chorus']);
+  assert.equal(sectionKind({ kind: 'other', name: '브리지' }), 'bridge');
+  assert.equal(keyRef('Em'), 7);
+  assert.equal(keyRef('Bb'), 10);
+  assert.equal(keyRef('Ebmaj7'), 3);
+  assert.equal(keyRef('?'), null);
 });

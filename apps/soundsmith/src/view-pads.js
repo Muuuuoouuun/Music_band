@@ -38,7 +38,8 @@ export function PadsView(root, app) {
     steps: toBars(starterPattern()), bars: 1, swing: 0.58, undo: [],
     fx: { bits: 16, rate: 44100, noise: 0, wobble: 0, lofi: 0 },
     fitBpm: null,
-    playing: false, rec: false, t0: 0, scheduled: 0, timer: null,
+    bar2Edited: false, // 2마디째를 손댔는지 (안 댔으면 2마디로 늘릴 때 1마디를 베낀다)
+    playing: false, rec: false, t0: 0, bpmAt: 120, scheduled: 0, timer: null, skip: new Set(),
   };
   const len = () => S.bars * STEPS;
   let kit = null;
@@ -101,6 +102,7 @@ export function PadsView(root, app) {
     if (S.mode === 'manual') S.mode = 'onset';
     chop();
     S.steps = toBars(replayPattern(S.pads, S.sr, S.srcBpm));
+    S.bar2Edited = false;
     S.undo = [];
     kit?.setSource(data, sr);
     render();
@@ -114,13 +116,16 @@ export function PadsView(root, app) {
       : S.mode === 'manual' ? S.slices.map((s) => s.start) : gridStarts(n, S.mode === 'grid8' ? 8 : 16).map((i) => nearestZero(S.data, i, 128));
     applyStarts(starts);
   }
-  // 자른 자리 → 조각 → 패드 (패드 설정·직접 붙인 이름은 그대로 두고 자리만 바꾼다)
-  function applyStarts(starts) {
+  // 자른 자리 → 조각 → 패드 (패드 설정·직접 붙인 이름은 그대로 두고 자리만 바꾼다).
+  // keep: 손으로 자리를 더하거나 옮기거나 지울 때는 패드가 원래 쓰던 소리(그 시작점을 품은 조각)를 그대로 쓴다.
+  // 아니면(자르는 방법을 바꿀 때) 패드 i = 조각 i.
+  function applyStarts(starts, { keep = false } = {}) {
     S.slices = slicesFrom(starts, S.data.length);
     S.names = nameSlices(S.data, S.sr, S.slices);
     S.pads = Array.from({ length: PAD_COUNT }, (_, i) => {
-      const sl = S.slices[i % S.slices.length];
       const prev = S.pads[i];
+      const own = keep && prev ? S.slices.find((x) => prev.start >= x.start && prev.start < x.end) : null;
+      const sl = own ?? S.slices[i % S.slices.length];
       return prev ? { ...prev, start: sl.start, end: sl.end } : defaultPad(sl);
     });
     S.selected = Math.min(S.selected, PAD_COUNT - 1);
@@ -210,9 +215,12 @@ export function PadsView(root, app) {
       // 직접 자르기: 누른 자리에 새로 자른다
       const z = nearestZero(S.data, at, 128);
       if (S.slices.every((s) => Math.abs(s.start - z) > 512)) {
-        applyStarts([...S.slices.map((s) => s.start), z]);
+        applyStarts([...S.slices.map((s) => s.start), z], { keep: true });
         const k = S.slices.findIndex((s) => s.start === z);
-        const pad = S.pads.findIndex((p) => p.start === z);
+        // 새 조각은 앞 패드와 같은 소리를 겹쳐 쓰던 패드(남는 패드) 하나에 올린다
+        const pad = S.pads.findIndex((p, i) => S.pads.slice(0, i).some((q) => q.start === p.start));
+        if (pad >= 0) S.pads[pad] = defaultPad(S.slices[k]);
+        kit?.setPads(S.pads);
         render();
         if (pad >= 0) selectPad(pad, true);
         app.notice(`${k + 1}번 자리에서 잘랐어요 (조각 ${S.slices.length}개).`);
@@ -250,7 +258,7 @@ export function PadsView(root, app) {
     moveMark(k, nearestZero(S.data, S.slices[k].start, 128));
     // 손으로 옮긴 자리는 '직접' 으로 남겨 둔다 (민감도를 바꿔도 지워지지 않게)
     S.mode = 'manual';
-    applyStarts(S.slices.map((s) => s.start));
+    applyStarts(S.slices.map((s) => s.start), { keep: true });
     render();
   };
   wave.addEventListener('pointerup', endMark);
@@ -260,7 +268,7 @@ export function PadsView(root, app) {
     const k = nearMark(waveAt(e).x);
     if (k <= 0) return;
     S.mode = 'manual';
-    applyStarts(S.slices.filter((_, i) => i !== k).map((s) => s.start));
+    applyStarts(S.slices.filter((_, i) => i !== k).map((s) => s.start), { keep: true });
     render();
     app.notice(`${k + 1}번 자른 자리를 지웠어요 (조각 ${S.slices.length}개).`);
   });
@@ -325,7 +333,12 @@ export function PadsView(root, app) {
     const v = kit?.trigger(i, kit.ctx.currentTime, velocity);
     if (v) flash(i);
     if (S.rec && S.playing) {
-      S.steps[i][nearestStep()] = velocity > 0.95 ? 2 : 1;
+      const k = nearestAbs();
+      const s = k % len();
+      S.steps[i][s] = velocity > 0.95 ? 2 : 1;
+      if (s >= STEPS) S.bar2Edited = true;
+      // 손으로 친 소리가 이미 났으니, 아직 예약 안 된 바로 그 칸은 이번 한 번 건너뛴다
+      if (k >= S.scheduled) S.skip.add(`${i}:${k}`);
       renderGrid(true);
     }
     return v;
@@ -376,7 +389,7 @@ export function PadsView(root, app) {
   const sliceSel = h('select', { 'aria-label': '이 패드의 조각' });
   sliceSel.addEventListener('change', () => {
     const sl = S.slices[Number(sliceSel.value)];
-    if (sl) setPad({ start: sl.start, end: sl.end });
+    if (sl) { setPad({ start: sl.start, end: sl.end }); renderGrid(true); }
   });
   const nameIn = h('input', { type: 'text', class: 'text-input pad-name-in', maxlength: '16', 'aria-label': '패드 이름 (비우면 짐작한 이름)' });
   nameIn.addEventListener('change', () => { setPad({ name: nameIn.value.trim() || null }); renderGrid(true); });
@@ -408,10 +421,9 @@ export function PadsView(root, app) {
   let gridKey = '';
   function setBars(n) {
     if (n === S.bars) return;
-    // 처음 2마디로 늘리면 뒤 마디가 비어 있을 때 앞 마디를 베껴 둔다
-    if (n === 2 && S.steps.every((row) => row.slice(STEPS).every((v) => !v))) S.steps = S.steps.map((row) => row.map((v, s) => (s < STEPS ? v : row[s - STEPS])));
+    // 2마디째를 아직 손대지 않았으면 2마디로 늘릴 때 지금 1마디를 베껴 둔다
+    if (n === 2 && !S.bar2Edited) S.steps = S.steps.map((row) => row.map((v, s) => (s < STEPS ? v : row[s - STEPS])));
     S.bars = n;
-    if (S.playing) S.scheduled = Math.ceil(S.scheduled / STEPS) * STEPS;
     render();
   }
   function remember() {
@@ -432,6 +444,7 @@ export function PadsView(root, app) {
   function setCell(p, s, v) {
     if (S.steps[p][s] && !v) remember();
     S.steps[p][s] = v;
+    if (s >= STEPS) S.bar2Edited = true;
     renderGrid();
   }
   function buildGrid() {
@@ -456,7 +469,7 @@ export function PadsView(root, app) {
           if (Math.abs(dy) < 8) return;
           drag.moved = true;
           const v = dy < 0 ? 2 : 1;
-          if (S.steps[p][s] !== v) { S.steps[p][s] = v; renderGrid(); }
+          if (S.steps[p][s] !== v) { S.steps[p][s] = v; if (s >= STEPS) S.bar2Edited = true; renderGrid(); }
         });
         const up = () => {
           if (!drag) return;
@@ -497,12 +510,17 @@ export function PadsView(root, app) {
   playBtn.addEventListener('click', () => (S.playing ? stopSeq() : playSeq()));
   recBtn.addEventListener('click', () => { S.rec = !S.rec; render(); });
   seqBpm.addEventListener('change', () => {
-    const v = Math.min(200, Math.max(40, Math.round(Number(seqBpm.value) || app.studio.bpm)));
-    const beat = S.playing ? (app.studio.ctx.currentTime - S.t0) / (60 / app.studio.bpm) : 0;
-    app.setTempo(v);
-    if (S.playing) S.t0 = app.studio.ctx.currentTime - beat * (60 / v);
+    app.setTempo(Math.min(200, Math.max(40, Math.round(Number(seqBpm.value) || app.studio.bpm))));
     render();
   });
+  // 어디서 빠르기를 바꾸든(이 칸·BPM 맞추기·루퍼) 지금 박 자리는 그대로 두고 이어서 돈다
+  function retime() {
+    if (S.playing && app.studio.ctx && S.bpmAt !== app.studio.bpm) {
+      const beat = (app.studio.ctx.currentTime - S.t0) / (60 / S.bpmAt);
+      S.t0 = app.studio.ctx.currentTime - beat * (60 / app.studio.bpm);
+    }
+    S.bpmAt = app.studio.bpm;
+  }
   const beatSec = () => 60 / app.studio.bpm;
   const stepAt = (absStep) => S.t0 + (Math.floor(absStep / STEPS) * 4 + stepBeat(absStep % STEPS, S.swing)) * beatSec();
   const playingStep = (round) => {
@@ -510,7 +528,12 @@ export function PadsView(root, app) {
     const k = round ? Math.round(beats * 4) : Math.max(0, Math.floor(beats * 4));
     return ((k % len()) + len()) % len();
   };
-  const nearestStep = () => playingStep(true);
+  // 스윙으로 늦춘 칸까지 따져 지금 시각에 가장 가까운 칸 (절대 번호)
+  const nearestAbs = () => {
+    const now = app.studio.ctx.currentTime;
+    const k = Math.max(0, Math.floor(((now - S.t0) / beatSec()) * 4));
+    return [k - 1, k, k + 1].filter((x) => x >= 0).reduce((a, b) => (Math.abs(stepAt(b) - now) < Math.abs(stepAt(a) - now) ? b : a));
+  };
   function tick() {
     const ctx = app.studio.ctx;
     const until = ctx.currentTime + AHEAD;
@@ -522,6 +545,7 @@ export function PadsView(root, app) {
       const s = k % len();
       for (let p = 0; p < PAD_COUNT; p++) {
         const v = S.steps[p][s];
+        if (S.skip.delete(`${p}:${k}`)) continue;
         if (v && at >= ctx.currentTime - 0.01) kit.trigger(p, Math.max(ctx.currentTime, at), v === 2 ? 1 : 0.7);
       }
       S.scheduled++;
@@ -531,7 +555,9 @@ export function PadsView(root, app) {
     const k = await ensureKit();
     if (!S.data) { app.notice('먼저 소리를 고르세요.', 'bad'); return; }
     S.t0 = k.ctx.currentTime + 0.08;
+    S.bpmAt = app.studio.bpm;
     S.scheduled = 0;
+    S.skip.clear();
     S.playing = true;
     clearInterval(S.timer);
     S.timer = setInterval(tick, 25);
@@ -633,9 +659,9 @@ export function PadsView(root, app) {
         h('div', { class: 'seq-foot' },
           h('p', { class: 'panel-hint' }, '짝수 칸이 스윙만큼 늦게 나와요 (50% = 똑바로, 66% = 셋잇단 느낌). 칸을 누르면 켜고 끄고, 누른 채 위아래로 끌면 세기. 패드를 누르면 그 줄이 생겨요.'),
           h('div', { class: 'btn-row' },
-            h('button', { type: 'button', class: 'quiet small', title: '첫 마디의 조각들을 원래 자리에', onclick: () => { remember(); S.steps = toBars(S.pads.length ? replayPattern(S.pads, S.sr, S.srcBpm) : starterPattern()); renderGrid(true); } }, '원래 순서대로'),
-            h('button', { type: 'button', class: 'quiet small', title: '1번 킥 · 2번 스네어 · 3번 하이햇 자리', onclick: () => { remember(); S.steps = toBars(starterPattern(S.slices.length)); renderGrid(true); } }, '붐뱁 뼈대'),
-            h('button', { type: 'button', class: 'quiet small', onclick: () => { remember(); S.steps = blank(); renderGrid(true); } }, '모두 지우기')))),
+            h('button', { type: 'button', class: 'quiet small', title: '첫 마디의 조각들을 원래 자리에', onclick: () => { remember(); S.steps = toBars(S.pads.length ? replayPattern(S.pads, S.sr, S.srcBpm) : starterPattern()); S.bar2Edited = false; renderGrid(true); } }, '원래 순서대로'),
+            h('button', { type: 'button', class: 'quiet small', title: '1번 킥 · 2번 스네어 · 3번 하이햇 자리', onclick: () => { remember(); S.steps = toBars(starterPattern(S.slices.length)); S.bar2Edited = false; renderGrid(true); } }, '붐뱁 뼈대'),
+            h('button', { type: 'button', class: 'quiet small', onclick: () => { remember(); S.steps = blank(); S.bar2Edited = false; renderGrid(true); } }, '모두 지우기')))),
       h('section', { class: 'panel pads-lofi', 'aria-label': '로파이와 내보내기' },
         h('h3', { class: 'box-title' }, '로파이', h('span', {}, ' · 낡은 샘플러 맛')),
         h('div', { class: 'chip-row' }, ...lofiChips.map((x) => x.b)),
@@ -749,11 +775,12 @@ export function PadsView(root, app) {
       if (!S.data) loadDemo();
       render();
       if (app.studio.ctx) await ensureKit();
-      if (!app.keyTarget) app.keyTarget = target;
-    } else if (app.keyTarget === target) app.keyTarget = null;
+      // 누르고 있던 건반은 지금 받는 쪽에서 먼저 떼어 준다 (안 그러면 음색 쪽 음이 남음)
+      if (!app.keyTarget) { app.keyboard.releaseAll(); app.keyTarget = target; }
+    } else if (app.keyTarget === target) { app.keyboard.releaseAll(); app.keyTarget = null; }
   });
   app.on('audio', () => { if (!root.hidden) ensureKit(); });
-  app.on('tempo', () => { if (!root.hidden) render(); });
+  app.on('tempo', () => { retime(); if (!root.hidden) render(); });
   app.on('resize', drawWave);
   app.on('panic', stopSeq);
   render();

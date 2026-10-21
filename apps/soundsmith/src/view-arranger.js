@@ -6,7 +6,7 @@ import { fit, color } from './draw.js';
 import { Instrument } from './engine.js';
 import { FACTORY, factoryById } from './presets.js';
 import { TRANSITIONS } from './fxgen.js';
-import { parseChord, arrange, liftPoints, STYLES, transposeName, voicingReason, parseChordPro, noteText, pcName } from './arrange.js';
+import { parseChord, arrange, liftPoints, STYLES, transposeName, voicingReason, parseChordPro, sectionKind, keyRef, noteText, pcName } from './arrange.js';
 
 const MAX_BARS = 8;
 const KINDS = {
@@ -21,12 +21,10 @@ const WIDTH_TEXT = { narrow: '좁게: 한 옥타브 반 안', wide: '넓게: 두
 const SOUND_FOR = { pad: 'worship-pad', pulse: 'tremolo-rhodes', arp: 'arp-pluck', organ: 'gospel-organ' };
 const BASS_SOUND = 'sub-bass';
 const pcOf = (m) => ((m % 12) + 12) % 12;
-const KEY_PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
-const keyPcOf = (text) => {
-  const m = /^([A-G])([#b♯♭]?)/.exec(String(text ?? '').trim());
-  return m ? pcOf(KEY_PC[m[1]] + (m[2] === '#' || m[2] === '♯' ? 1 : m[2] ? -1 : 0)) : null;
-};
-const moveCell = (cell, semis, key) => cell.split(/\s+/).filter(Boolean).map((w) => (w === '%' ? w : transposeName(w, semis, key))).join(' ');
+// 코드 없음(N.C.)은 쉬는 자리: 마디 안 자리는 차지하지만 소리는 내지 않는다
+const isRest = (w) => /^(N\.?C\.?|x)$/i.test(w);
+const REST = { name: 'N.C.', rest: true };
+const moveCell = (cell, semis, key) => cell.split(/\s+/).filter(Boolean).map((w) => (w === '%' || isRest(w) ? w : transposeName(w, semis, key))).join(' ');
 
 /** api: { tracks, clock(), load({ parts, bars, lifts, autoRiser }), setClock({ bpm, meter }), setAutoRiser(on), stop(), playing() } */
 export function ArrangerPanel(app, api) {
@@ -158,7 +156,7 @@ export function ArrangerPanel(app, api) {
     const k = songKey();
     const stageSong = app.stage?.currentSong?.();
     songName.textContent = imported?.title || stageSong?.name || '지금 곡';
-    songMeta.textContent = `${pcName(k, k)} · ${ck.bpm} BPM · ${ck.meter}`;
+    songMeta.textContent = `${imported?.key || pcName(k, k)} · ${ck.bpm} BPM · ${ck.meter}`;
     const d = pcOf(k - chartKey);
     moveKeyBtn.hidden = !edited || d === 0;
     moveKeyBtn.textContent = `코드를 ${pcName(chartKey, chartKey)} → ${pcName(k, k)} 로 옮기기`;
@@ -194,6 +192,7 @@ export function ArrangerPanel(app, api) {
         const chords = [];
         for (const word of cell.split(/\s+/).filter(Boolean)) {
           if (word === '%') chords.push(...(chords.length ? [chords.at(-1)] : bars.at(-1) ?? []));
+          else if (isRest(word)) chords.push(REST);
           else {
             const c = parseChord(word);
             if (c) chords.push(c);
@@ -210,7 +209,8 @@ export function ArrangerPanel(app, api) {
         barSec.push(s);
       });
     }
-    const notes = arrange(bars, { beatsPerBar: bpb, widths, styles, variant });
+    // 6/8 은 8분음표가 한 박이라 8분 펄스·아르페지오도 한 박씩
+    const notes = arrange(bars, { beatsPerBar: bpb, widths, styles, variant, eighth: api.clock().meter === '6/8' ? 1 : 0.5 });
     return { bars, widths, styles, barSec, marks, notes, voicings: notes.voicings, lifts: liftPoints(widths), bad, badCells, bpb, beats: Math.max(1, bars.length) * bpb };
   }
 
@@ -503,10 +503,7 @@ export function ArrangerPanel(app, api) {
       app.notice('코드 진행을 찾지 못했어요. band2sheet 에서 내보낸 ChordPro(.cho) 파일인지 확인해 주세요.', 'bad');
       return false;
     }
-    const kindOf = (s) => {
-      const t = `${s.kind} ${s.name}`.toLowerCase();
-      return /chorus|후렴/.test(t) ? 'chorus' : /bridge|브릿지/.test(t) ? 'bridge' : /verse|절/.test(t) ? 'verse' : 'other';
-    };
+    const kindOf = sectionKind;
     // 종류마다 처음 나온 섹션만. 8마디를 후렴 → 절 → 브릿지 순으로 4마디씩 먼저 나누고, 남으면 앞에서부터 더 담는다
     let picked = [];
     for (const s of song.sections) if (picked.length < 4 && !picked.some((p) => p.kind === kindOf(s))) picked.push({ kind: kindOf(s), src: s });
@@ -518,7 +515,7 @@ export function ArrangerPanel(app, api) {
     picked.forEach((p, i) => { const more = Math.min(room, p.src.bars.length - take[i]); take[i] += more; room -= more; });
     const dropped = picked.filter((_, i) => !take[i]).map((p) => p.src.name);
     picked = picked.map((p, i) => ({ ...p, take: take[i] })).filter((p) => p.take);
-    const keyPc = keyPcOf(song.key) ?? keyPcOf(song.sections[0].bars[0]?.[0]) ?? 0;
+    const keyPc = keyRef(song.key) ?? keyRef(song.sections[0].bars[0]?.[0]) ?? 0;
     imported = { title: song.title || fileName.replace(/\.[^.]+$/, ''), key: song.key, keyPc };
     sections = picked.map((p) => {
       const name = p.src.name && p.src.name.length <= 8 ? p.src.name : KINDS[p.kind].label;

@@ -247,6 +247,7 @@ export function normalizePatch(input = {}) {
     : BASE_PATCH.custom.slice();
   out.category = CATEGORIES.some((c) => c.id === src.category) ? src.category : BASE_PATCH.category;
   out.layers = Array.isArray(src.layers) ? src.layers.filter((l) => l && typeof l === 'object' && l.patch).slice(0, MAX_LAYERS).map(normalizeLayer) : [];
+  if (out.keys.lo > out.keys.hi) [out.keys.lo, out.keys.hi] = [out.keys.hi, out.keys.lo];
   return out;
 }
 
@@ -261,14 +262,17 @@ const clampNum = (v, lo, hi, fallback, step = 0) => {
  * lo..hi 건반에서만 울리고, octave 만큼 옮겨 연주한다.
  */
 export function normalizeLayer(l = {}) {
+  const a = clampNum(l.lo, 0, 127, 0, 1);
+  const b = clampNum(l.hi, 0, 127, 127, 1);
   return {
     preset: typeof l.preset === 'string' ? l.preset.slice(0, 40) : null,
     on: l.on !== false,
     level: clampNum(l.level, 0, 1, 0.7),
     octave: clampNum(l.octave, -2, 2, 0, 1),
-    lo: clampNum(l.lo, 0, 127, 0, 1),
-    hi: clampNum(l.hi, 0, 127, 127, 1),
-    patch: normalizePatch({ ...(l.patch ?? {}), layers: [] }),
+    lo: Math.min(a, b),
+    hi: Math.max(a, b),
+    // 겹친 음색의 범위·옥타브는 이 겹침 설정만 따른다 (저장해 둔 음색의 건반 설정은 버림)
+    patch: normalizePatch({ ...(l.patch ?? {}), layers: [], keys: { lo: 0, hi: 127, octave: 0 } }),
   };
 }
 

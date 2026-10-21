@@ -1,7 +1,7 @@
 // 예배 무대: 연주 중에 음색을 바꾸는 화면. 세트 리스트, 큰 음색 패드 8개(숫자 키 1–8),
 // 손가락으로 미는 판(가로 밝기 × 세로 공간), 패드 홀드, 로터리 빠르게, 다음 곡, 루퍼 한 줄,
 // 전환 효과음(다음 마디 첫 박에 맞춤)과 곡의 조로 깔리는 드론.
-import { h, nextId, knob } from './ui.js';
+import { h, nextId, knob, setText, setAttr } from './ui.js';
 import { fit, color } from './draw.js';
 import { applyMacro, CATEGORIES } from './patch.js';
 import { FACTORY, factoryById } from './presets.js';
@@ -65,13 +65,15 @@ export function StageView(root, app) {
   const setNote = h('p', { class: 'set-note' });
   function selectSong(i) {
     if (!st.songs.length) return;
+    const before = st.songs[st.current]?.id;
     st.current = Math.max(0, Math.min(st.songs.length - 1, i));
     const song = st.songs[st.current];
     if (app.tuning.transpose !== song.transpose) app.setTuning({ ...app.tuning, transpose: song.transpose });
     choose(entryFor(song.presetId));
     persist();
     render();
-    app.emit('song');
+    // 다른 곡으로 넘어갔을 때만 (같은 곡을 다시 누르거나 음색만 바꾼 것은 곡이 바뀐 게 아님)
+    if (st.songs[st.current].id !== before) app.emit('song');
   }
   prevBtn.addEventListener('click', () => selectSong(st.current - 1));
   nextBtn.addEventListener('click', () => selectSong(st.current + 1));
@@ -230,9 +232,17 @@ export function StageView(root, app) {
     scheduled = scheduled.filter((x) => x.end > now - 0.5);
     const { info, beatSec, beatsPerBar } = timing();
     const next = scheduled.filter((x) => x.hit > now).sort((a, b) => a.hit - b.hit)[0];
-    for (const c of fxCards) c.badge.hidden = !scheduled.some((x) => x.id === c.id && x.start > now);
+    for (const c of fxCards) {
+      const hide = !scheduled.some((x) => x.id === c.id && x.start > now);
+      if (c.badge.hidden !== hide) c.badge.hidden = hide;
+    }
+    drawTimeline({ info, beatSec, beatsPerBar, now });
+    // 남은 박 글자는 바뀔 때만 다시 만든다 (매 프레임 새로 만들면 화면 읽기 프로그램이 계속 읽음)
+    const left = next && ctx ? Math.ceil((next.hit - now) / beatSec) : null;
+    const key = next && ctx ? `${next.id}|${next.label}|${left}|${info.clock.bpm}` : `idle|${info.playing}|${info.clock.bpm}`;
+    if (key === cdKey) return;
+    cdKey = key;
     if (next && ctx) {
-      const left = Math.ceil((next.hit - now) / beatSec);
       const steps = [3, 2, 1].map((n) => h('span', { class: `cd-n${n === left ? ' on' : left < n ? ' past' : ''}` }, String(n)));
       countdown.replaceChildren(h('span', { class: 'cd-label' }, `${next.label}${next.id === 'riser' || next.id === 'reverse' ? '까지' : ''}`),
         ...steps.flatMap((x, i) => (i ? [h('span', { class: 'cd-dot' }, '·'), x] : [x])), h('span', { class: 'cd-unit' }, `박 · ${info.clock.bpm} BPM`));
@@ -242,10 +252,16 @@ export function StageView(root, app) {
       countdown.replaceChildren(h('span', { class: 'cd-label' }, info.playing ? '대기 중' : '루퍼 멈춤 · 누르면 바로'), h('span', { class: 'cd-unit' }, `${info.clock.bpm} BPM`));
       countdown.classList.remove('far');
     }
-    drawTimeline({ info, beatSec, beatsPerBar, now });
   }
+  let cdKey = '';
+  let lineKey = '';
   function drawTimeline({ info, beatSec, beatsPerBar, now }) {
     if (timeline.closest('[hidden]')) return;
+    // 루퍼가 멈춰 있으면 그림이 바뀔 때만 다시 그린다
+    const loopLabel = info.tracks.find((t) => t.notes.length && t.sound)?.sound.label ?? '';
+    const key = info.playing ? `play|${now}` : `idle|${loopLabel}|${info.clock.bars}|${beatsPerBar}|${timeline.clientWidth}|${timeline.clientHeight}`;
+    if (key === lineKey) return;
+    lineKey = key;
     const { g, w, h: hh } = fit(timeline);
     const pad = { l: 14, r: 14 };
     const bars = 4;
@@ -382,7 +398,8 @@ export function StageView(root, app) {
     if (drone) stopDrone();
     else {
       await app.ensureAudio();
-      startDrone();
+      // 소리 켜기를 기다리는 동안 두 번 눌렸으면 하나만
+      if (!drone) startDrone();
     }
     renderDrone();
   });
@@ -555,19 +572,21 @@ export function StageView(root, app) {
 
   function renderStrip() {
     const info = app.looper.info();
-    lPlay.textContent = info.playing ? '■ 정지' : '▶ 재생';
-    lPlay.setAttribute('aria-pressed', String(info.playing));
-    lRec.setAttribute('aria-pressed', String(info.recording));
-    lRec.textContent = info.counting ? '● 세는 중…' : info.recording ? '● 녹음 멈추기' : '● 녹음';
-    lPos.textContent = info.beat == null ? '1.1' : info.beat < 0 ? '카운트' : `${Math.floor(info.inLoop / info.clock.beatsPerBar) + 1}.${Math.floor(info.inLoop % info.clock.beatsPerBar) + 1}`;
+    setText(lPlay, info.playing ? '■ 정지' : '▶ 재생');
+    setAttr(lPlay, 'aria-pressed', String(info.playing));
+    setAttr(lRec, 'aria-pressed', String(info.recording));
+    setText(lRec, info.counting ? '● 세는 중…' : info.recording ? '● 녹음 멈추기' : '● 녹음');
+    setText(lPos, info.beat == null ? '1.1' : info.beat < 0 ? '카운트' : `${Math.floor(info.inLoop / info.clock.beatsPerBar) + 1}.${Math.floor(info.inLoop % info.clock.beatsPerBar) + 1}`);
     const frac = info.inLoop == null ? 0 : info.inLoop / info.clock.beats;
     if (lBars.childElementCount !== info.tracks.length) lBars.replaceChildren(...info.tracks.map(() => h('span', { class: 'strip-bar' }, h('span'))));
     info.tracks.forEach((tr, i) => {
       const bar = lBars.children[i];
-      bar.className = `strip-bar strip-${tr.color}${tr.notes.length ? '' : ' empty'}${tr.muted ? ' muted' : ''}`;
-      bar.firstChild.style.width = `${tr.notes.length ? frac * 100 : 0}%`;
+      const cls = `strip-bar strip-${tr.color}${tr.notes.length ? '' : ' empty'}${tr.muted ? ' muted' : ''}`;
+      if (bar.className !== cls) bar.className = cls;
+      const width = `${tr.notes.length ? frac * 100 : 0}%`;
+      if (bar.firstChild.style.width !== width) bar.firstChild.style.width = width;
     });
-    lInfo.textContent = `${info.clock.bpm} BPM · ${info.clock.bars}마디 · 녹음할 트랙 ${info.armed + 1}`;
+    setText(lInfo, `${info.clock.bpm} BPM · ${info.clock.bars}마디 · 녹음할 트랙 ${info.armed + 1}`);
   }
 
   function renderRotary() {
