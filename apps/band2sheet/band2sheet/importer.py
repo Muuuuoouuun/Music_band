@@ -258,5 +258,34 @@ def import_symbolic(path: str | Path, out_dir: Path, title: str | None = None, l
     n_notes = sum(len(t.notes) for t in project.tracks.values())
     log(f"   - 파트 {len(project.tracks)}개, 음표 {n_notes}개, 템포 약 {project.tempo_bpm:.0f} BPM, "
         f"{project.time_signature}, 키 {project.key.name}")
+    _melody_only_chords(project, log)
     project.save(out_dir / "project.json")
     return project
+
+
+def _melody_only_chords(project: Project, log=print) -> None:
+    """반주 없이 멜로디만 있는 악보(찬송가 멜로디 악보, 악보 사진 인식 결과)에 코드를 붙인다.
+
+    일반 코드 인식은 반주 소리를 전제로 해서 멜로디 한 줄로는 sus4 같은 엉뚱한 코드를 고른다
+    (악보 사진 실험: 'C F/C C G/B Am7 D7 G' 자리에 'Asus4 Csus4 Dsus4 Em'). 그래서 멜로디에 반주를
+    붙이는 방식(조 안의 3화음, 자연스러운 진행, 마디 첫 박에서 바꾸기)인 harmonize 를 쓴다.
+    악보에 코드 기호가 있거나, 반주 파트가 있거나, 곡 중간에 조가 바뀌면 손대지 않는다.
+    """
+    from .harmonize import harmonize
+    from .project import TimeMap
+
+    pitched = {k for k, t in project.tracks.items() if k != "drums" and t.notes}
+    if project.chords is not None or pitched != {"vocals"} or project.key_changes:
+        return
+    notes = project.tracks["vocals"].notes
+    h = harmonize(notes, project.beat_times, project.beats_per_bar, project.key, project.downbeat)
+    if not h.chords:
+        return
+    tm = TimeMap(project.beat_times)
+    chords = []
+    for t0, t1, root, q in h.chords:
+        b0, b1 = (float(tm.to_beats(t)) - project.downbeat for t in (t0, t1))
+        chords.append([round(max(b0, 0.0), 3), round(b1, 3), int(root), q, None])
+    project.chords = [c for c in chords if c[1] > c[0]]
+    project.engines["chords"] = "멜로디에 붙인 코드 (조 안의 3화음)"
+    log(f"   - 반주 없는 멜로디라 조 안의 3화음으로 코드 {len(project.chords)}개를 붙임")

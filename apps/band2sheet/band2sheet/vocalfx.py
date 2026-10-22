@@ -36,14 +36,18 @@ class PitchTrack:
 
 
 def track_pitch(y: np.ndarray, sr: int, engine: str = "auto") -> PitchTrack:
-    """보컬 음높이 곡선. CREPE 가 있으면 CREPE, 없으면 pYIN."""
-    from .engines import available
+    """보컬 음높이 곡선. GPU 에 CREPE 가 있으면 CREPE(full), 아니면 pYIN.
+
+    CPU 에서 쓰는 CREPE tiny 모델은 음 하나를 반음 가까이 잘못 잡기도 해서(오토튠이 그 음을
+    엉뚱하게 끌어감) pYIN 보다 부정확하다 — 합성 노래 시험에서 고친 뒤 평균 오차 0.04 대 0.02 반음.
+    """
+    from .engines import available, torch_device
     from .transcribe import crepe_f0, pyin_f0
 
     spec = INSTRUMENTS["vocals"]
     ya = librosa.resample(y, orig_sr=sr, target_sr=ANALYSIS_SR) if sr != ANALYSIS_SR else y
     if engine == "auto":
-        engine = "crepe" if available("crepe") else "pyin"
+        engine = "crepe" if available("crepe") and torch_device() == "cuda" else "pyin"
     if engine == "crepe":
         y16 = librosa.resample(ya, orig_sr=ANALYSIS_SR, target_sr=16000)
         m16 = crepe_f0(y16, 16000, 160, spec)  # 10 ms 간격 -> 분석 간격으로 다시 샘플링

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ..audio_io import (AUDIO_CODECS, download_audio, download_video, extract_audio, is_url,
                         require_ffmpeg)
+from ..omr import IMAGE_EXT, supported_extensions
 from ..pipeline import AnalyzeOptions, RenderOptions, RenderResult, analyze, render
 from ..project import Project
 from ..view import measure_times
@@ -24,7 +25,12 @@ ALLOWED_EXT = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma",
                ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v",
                ".zip",  # zip = 멀티트랙(스템) 묶음
                ".mid", ".midi", ".kar", ".musicxml", ".mxl", ".xml"}  # 악보 파일 -> 변환
-SCORE_OR_STEMS_EXT = {".zip", ".mid", ".midi", ".kar", ".musicxml", ".mxl", ".xml"}  # 곡 나누기 대상 아님
+SCORE_OR_STEMS_EXT = {".zip", ".mid", ".midi", ".kar", ".musicxml", ".mxl", ".xml"} | IMAGE_EXT  # 곡 나누기 대상 아님
+
+
+def allowed_extensions() -> set[str]:
+    """지금 받을 수 있는 입력 형식. 악보 이미지는 oemer 가 설치돼 있을 때만."""
+    return ALLOWED_EXT | supported_extensions()
 
 
 @dataclass
@@ -240,7 +246,9 @@ class JobManager(EditMixin, PlaybackMixin):
 
     def create(self, filename: str, data_stream, options: dict) -> Job:
         ext = Path(filename).suffix.lower()
-        if ext not in ALLOWED_EXT:
+        if ext in IMAGE_EXT and ext not in allowed_extensions():
+            raise ValueError("악보 사진·PDF 를 읽으려면 oemer 가 필요합니다 (README 의 '악보 이미지' 참고).")
+        if ext not in allowed_extensions():
             raise ValueError(f"지원하지 않는 파일 형식입니다: {ext or '(확장자 없음)'}")
         job_id = uuid.uuid4().hex[:12]
         d = self.job_dir(job_id)

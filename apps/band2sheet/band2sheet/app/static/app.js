@@ -173,7 +173,8 @@ async function loadInfo() {
   const t = $("#engines-table");
   t.innerHTML = state.info.engines.map((e) => `<tr><td class="${e.installed ? "ok" : "no"}">${e.installed ? "✓ 설치됨" : "· 없음"}</td>
     <td><b>${e.key}</b><br><span class="muted small">${e.note}</span></td><td>${e.role}${e.installed ? "" : `<br><code class="small">pip install ${e.pip}</code>`}</td></tr>`).join("") +
-    `<tr><td class="${state.info.musescore ? "ok" : "no"}">${state.info.musescore ? "✓ 설치됨" : "· 없음"}</td><td><b>MuseScore</b></td><td>PDF 악보 만들기</td></tr>`;
+    `<tr><td class="${state.info.musescore ? "ok" : "no"}">${state.info.musescore ? "✓ 설치됨" : "· 없음"}</td><td><b>MuseScore</b></td><td>PDF 악보 만들기</td></tr>` +
+    `<tr><td class="${state.info.omr ? "ok" : "no"}">${state.info.omr ? "✓ 설치됨" : "· 없음"}</td><td><b>oemer</b><br><span class="muted small">광학 악보 인식 (따로 설치)</span></td><td>악보 사진·PDF 읽기 (멜로디)</td></tr>`;
   updateSettingsCount();
 }
 
@@ -207,16 +208,24 @@ function setFile(f) {
 }
 
 // 입력 탭: 링크 / 음원 파일 / 악보 파일. 두 파일 탭은 같은 #drop·#file 을 쓰고 안내와 받는 형식만 바뀐다.
-const SCORE_EXT = [".mid", ".midi", ".kar", ".musicxml", ".mxl", ".xml"];
+// 악보 사진·스캔·PDF 는 서버에 oemer(광학 악보 인식)가 있을 때만 받는다 (info.omr)
+const SCORE_IMAGE_EXT = [".png", ".jpg", ".jpeg", ".pdf"];
+const SCORE_EXT = [".mid", ".midi", ".kar", ".musicxml", ".mxl", ".xml", ...SCORE_IMAGE_EXT];
 const SOURCE_TEXT = {
   audio: { title: "음원 파일을 끌어다 놓기", help: "오디오·영상 파일, 악기별 스템 ZIP", label: "음원 파일 선택 (오디오·영상 또는 스템 ZIP)" },
   score: { title: "악보 파일을 끌어다 놓기", help: "MIDI · MusicXML", label: "악보 파일 선택 (MIDI·MusicXML)" },
+  scoreImage: { title: "악보 파일이나 악보 사진을 끌어다 놓기", help: "MIDI · MusicXML · 악보 사진(PNG·JPG)·PDF — 사진은 멜로디만 읽고 코드는 추정해요",
+                label: "악보 파일 선택 (MIDI·MusicXML·악보 사진·PDF)" },
 };
 
+function fileExt(name) {
+  return (String(name).match(/\.[^.]+$/) || [""])[0].toLowerCase();
+}
+
 function fileKind(name) {
-  const ext = (String(name).match(/\.[^.]+$/) || [""])[0].toLowerCase();
-  if (SCORE_EXT.includes(ext)) return "score";
+  const ext = fileExt(name);
   const all = state.info && state.info.extensions;
+  if (SCORE_EXT.includes(ext)) return !all || all.includes(ext) ? "score" : null;
   return !all || all.includes(ext) ? "audio" : null;
 }
 
@@ -235,8 +244,8 @@ function setSource(src, focus = false) {
   $("#src-panel-link").classList.toggle("hidden", src !== "link");
   $("#src-panel-file").classList.toggle("hidden", src === "link");
   if (src !== "link") {
-    const t = SOURCE_TEXT[src];
     const exts = sourceExtensions(src);
+    const t = SOURCE_TEXT[src === "score" && exts.some((e) => SCORE_IMAGE_EXT.includes(e)) ? "scoreImage" : src];
     $("#src-panel-file").setAttribute("aria-labelledby", `src-tab-${src}`);
     $("#drop-title").textContent = t.title;
     $("#file-help").textContent = t.help;
@@ -258,7 +267,9 @@ function pickFile(f) {
   $("#start-error").textContent = "";
   if (!kind) {
     $("#file").value = "";
-    $("#start-error").textContent = `${f.name}: 받을 수 없는 형식이에요. 음원(오디오·영상·스템 ZIP)이나 악보(MIDI·MusicXML) 파일을 넣어 주세요.`;
+    $("#start-error").textContent = SCORE_IMAGE_EXT.includes(fileExt(f.name))
+      ? `${f.name}: 악보 사진·PDF 를 읽는 프로그램(oemer)이 설치되어 있지 않아요. MIDI·MusicXML 로 넣거나 README 의 '악보 이미지'를 따라 설치해 주세요.`
+      : `${f.name}: 받을 수 없는 형식이에요. 음원(오디오·영상·스템 ZIP)이나 악보(MIDI·MusicXML) 파일을 넣어 주세요.`;
     return;
   }
   if (kind !== state.source) setSource(kind);
@@ -1647,15 +1658,15 @@ function openKeySheet() {
 // ------------------------------------------------------------------ 이 작업을 만든 입력 + 다시 채보
 function jobSourceKind(job) {
   if (job.url) return "link";
-  const ext = (String(job.filename).match(/\.[^.]+$/) || [""])[0].toLowerCase();
-  return SCORE_EXT.includes(ext) ? "score" : "audio";
+  return SCORE_EXT.includes(fileExt(job.filename)) ? "score" : "audio";
 }
 
 function renderSource() {
   const job = state.job;
   if (!job) return;
   const kind = jobSourceKind(job);
-  $("#r-src-kind").textContent = { link: "링크", audio: "음원 파일", score: "악보 파일" }[kind];
+  $("#r-src-kind").textContent = kind === "score" && SCORE_IMAGE_EXT.includes(fileExt(job.filename)) ? "악보 사진"
+    : { link: "링크", audio: "음원 파일", score: "악보 파일" }[kind];
   $("#r-src-value").textContent = job.url || job.filename || "";
   $("#r-quality-group").classList.toggle("hidden", kind === "score");  // 악보 파일은 분리하지 않는다
   const q = state.rerunQuality && state.rerunQuality.job === job.id ? state.rerunQuality.v : ((job.options || {}).quality || "standard");
@@ -1797,6 +1808,7 @@ function renderScorePane() {
       const h = document.createElement("button");
       h.type = "button";
       h.className = "part-solo";
+      h.dataset.stem = it.stem;
       const on = state.solo.size === 1 && state.solo.has(it.stem);
       h.classList.toggle("on", on);
       h.setAttribute("aria-pressed", String(on));
@@ -1827,9 +1839,14 @@ function soloStem(stem) {
     const m = masterAudio();
     if (m && m.paused) togglePlay();
   }
-  if (state.pane === "score" && state.result) {
-    $$("#tabs .part-solo").forEach((b) => b.classList.remove("on"));
-    renderScorePane();
+}
+
+// 파트 탭의 헤드폰 버튼 상태를 믹서와 맞춘다 (악보를 다시 그리지 않고)
+function syncPartSolo() {
+  for (const b of $$("#tabs .part-solo")) {
+    const on = state.solo.size === 1 && state.solo.has(b.dataset.stem);
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", String(on));
   }
 }
 
@@ -2414,6 +2431,7 @@ function applyMix() {
     if (g) g.gain.setTargetAtTime(v, now, 0.03);
     else a.volume = v;
   }
+  syncPartSolo();
 }
 
 function togglePlay() {

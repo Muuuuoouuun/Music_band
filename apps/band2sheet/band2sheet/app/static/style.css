@@ -1083,3 +1083,8 @@ dialog td.ok, dialog td.no { white-space: nowrap; }
   .result-head .actions { width: 100%; justify-content: flex-end; }
   .result-head h1 { white-space: normal; overflow: visible; }
 }
+@media (max-width: 520px) {
+  /* 분석 설정 탭 네 개가 한 화면에 다 보이게 두 줄로 */
+  .sd-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; }
+  .sd-tabs [role=tab] { padding: 0 10px; }
+}

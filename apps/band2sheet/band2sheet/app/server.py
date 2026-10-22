@@ -21,10 +21,11 @@ from pydantic import BaseModel
 from .. import __version__
 from ..engines import has, status as engine_status, torch_device
 from ..instruments import INSTRUMENTS
+from ..omr import available as omr_available
 from ..pipeline import find_musescore
 from ..playback import has_rubberband
 from ..synth import available as synth_available
-from .jobs import ALLOWED_EXT, JobManager
+from .jobs import JobManager, allowed_extensions
 
 STATIC = Path(__file__).parent / "static"
 SAFE = re.compile(r"^[A-Za-z0-9_.\-]+$")
@@ -133,7 +134,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "pitch_shift": "rubberband" if has_rubberband() else "librosa",
             "instruments": [{"name": k, "label": v.label, "label_ko": v.label_ko}
                             for k, v in INSTRUMENTS.items()],
-            "extensions": sorted(ALLOWED_EXT),
+            "omr": omr_available(),  # 악보 사진·PDF 읽기 (oemer)
+            "extensions": sorted(allowed_extensions()),
         }
 
     @app.get("/api/jobs")

@@ -60,7 +60,20 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
     opts = opts or AnalyzeOptions()
     out_dir.mkdir(parents=True, exist_ok=True)
     from .importer import import_symbolic, is_symbolic
+    from .omr import is_image, recognize
 
+    if source and not opts.stems_dir and is_image(source):
+        # 악보 사진·스캔·PDF: oemer 로 MusicXML 을 만든 뒤 악보 파일처럼 불러온다 (코드는 음표로 추정)
+        xml = recognize(source, out_dir / "work", log, progress)
+        if progress:
+            progress(0.92, "① 읽은 악보 불러오는 중")
+        project = import_symbolic(xml, out_dir, Path(source).stem, log)
+        project.source = str(source)
+        project.engines["input"] = "악보 이미지 (oemer 광학 악보 인식)"
+        project.save(out_dir / "project.json")
+        if progress:
+            progress(0.95, "분석 완료")
+        return project
     if source and not opts.stems_dir and is_symbolic(source):
         # MIDI·MusicXML: 소리 분석 없이 바로 프로젝트로 (변환 모드)
         if progress:

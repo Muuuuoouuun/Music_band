@@ -1,5 +1,26 @@
 # band2sheet 추가 실행 검증에 필요한 의존성
 
+## 2026-10-15 실제 엔진 설치 (Linux x86_64, CPU 4코어, CPython 3.11.17)
+
+실제 곡으로 분리·채보를 돌리려고 앱 전용 `.venv` 에 선택 엔진을 설치했습니다. 위의 2026-10-04 조사(기본 `.[app,dev]`)와 별개 기록입니다.
+
+| 패키지 | 버전 | 메모 |
+|---|---|---|
+| torch · torchaudio · torchvision | 2.5.1 · 2.5.1 · 0.20.1 | audio-separator 가 torch 를 2.14 로 올려 torchaudio 가 깨져서 다시 맞춤 |
+| demucs | 4.1.0 | `htdemucs_6s`·`htdemucs`·`htdemucs_ft` 가중치 458 MB (`TORCH_HOME/hub/checkpoints`) |
+| audio-separator | 0.47.0 | Mel-RoFormer Karaoke 871 MB · MDX23C DrumSep 418 MB (`BAND2SHEET_MODEL_DIR`) |
+| basic-pitch | 0.4.0 | `--no-deps` 로 tensorflow 없이 설치, ONNX 모델 사용 (`pip check` 는 tensorflow 없음을 알림) |
+| onnxruntime | 1.31.0 | Basic Pitch 용 |
+| torchcrepe | 0.0.24 | 모델이 패키지에 포함 |
+| verovio · cairosvg · pypdf | 6.3.0 · 2.9.1 · 6.20.1 | MuseScore 없이 PDF |
+| setuptools | 80.10.2 | resampy 가 `pkg_resources` 를 써서 81 미만 필요 |
+
+설치 후 `.venv` 8.2 GB, 모델 캐시 1.8 GB 입니다. Meta 서버·HuggingFace·zenodo 가 막힌 망이라 Demucs 는 GitHub 릴리스 미러에서 받고
+SHA-256 앞 8자리를 검증했습니다(앱에 자동 대체로 넣음). 같은 이유로 ByteDance 피아노 채보·Beat This!·faster-whisper 는 받지 못해 설치하지 않았습니다.
+
+악보 사진 인식 oemer 0.1.8 은 최신 onnxruntime 에서 모델을 불러오지 못해(ConvTranspose pads 오류) **별도 가상환경**에
+`onnxruntime 1.17.3`·`numpy 1.26.4`·`opencv-python-headless<4.11` 로 설치하고 `BAND2SHEET_OEMER` 로 경로를 알려 줍니다. 모델은 GitHub 릴리스에서 약 210 MB.
+
 2026-10-04, CPython 3.11 / macOS arm64의 앱 전용 `.venv`를 기준으로 공식 PyPI 메타데이터를 조사한 뒤 아래 기본 의존성을 설치했습니다. `pip check`는 통과했고 전체 Python 검사는 77개 통과, 2개 skip입니다. AI 런타임·모델은 설치하지 않았습니다.
 
 ## 필요한 설치 범위와 크기
