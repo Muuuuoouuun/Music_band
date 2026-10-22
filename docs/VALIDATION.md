@@ -1,4 +1,17 @@
-# 검증 기록 · 2026-10-07
+# 검증 기록 · 2026-10-22
+
+## 2026-10-15~22 band2sheet 실제 엔진·실제 음원·새 화면
+
+이번 단계에서 처음으로 **모델을 설치하고 실제 음원으로** 돌렸습니다. Linux x86_64, CPU 4코어, Python 3.11.17, torch 2.5.1(CPU)입니다. 설치 범위와 크기는 [DEPENDENCIES.md](DEPENDENCIES.md), 엔진별 결과는 [band2sheet OPEN_SOURCE.md](../apps/band2sheet/docs/OPEN_SOURCE.md#실제로-설치해-돌려-본-결과-2026-10-15)에 있습니다.
+
+- **설치한 엔진**: Demucs 4.1.0(htdemucs_6s), audio-separator 0.47(Mel-RoFormer Karaoke·MDX23C DrumSep), Basic Pitch 0.4.0(ONNX, tensorflow 없이), torchcrepe, Verovio PDF, oemer 0.1.8(별도 가상환경). Meta·HuggingFace·zenodo 가 막힌 망이라 Demucs 는 GitHub 미러에서 받아 해시를 검증했고(앱에 자동 대체로 추가), ByteDance 피아노·Beat This!·Whisper 는 가중치를 받지 못해 **미검증**입니다.
+- **실제 곡**(Karissa Hobbs "Let's Go Fishin'", CC BY 3.0, 2분 13초) 표준 품질: 처음 62분 → 수정 후 24분. 실제 곡으로 찾은 문제 네 가지를 고쳤습니다 — 곡에 없는 피아노 스템을 채보해 유령음이 생김(−60 dB 스템은 건너뜀), CPU 용 CREPE tiny 가 베이스에서 소리 나는 구간의 23%만 잡음(pYIN 으로 자동 전환, 207음), RoFormer 겹침 8 이 CPU 에서 4배 느림(CPU 는 2), Verovio 가 작업 스레드에서 글꼴을 못 찾아 PDF 가 깨짐(경로 지정, 스레드 회귀 테스트). 키 B♭·약 89 BPM 은 두 번 같았지만 박자는 6/8·4/4 로 갈려 박자 추정은 아직 믿기 어렵습니다.
+- **악보 사진(OMR)**: 사용자 시안의 찬송가 사진(예수를 나의 구주 삼고, C 장조)을 oemer 로 읽어 멜로디 음표 37개 중 33개를 순서대로 맞혔습니다(89%, 쪽당 약 10분). 코드 이름·가사 글자는 읽지 못하고 음표 길이를 잘못 읽은 마디가 있습니다. 앱 연결에서 찾은 문제 두 가지를 고쳤습니다 — oemer 가 한 줄 멜로디도 'Piano' 파트로 써서 리드시트가 안 만들어짐(오선 하나면 멜로디로), 멜로디만으로 코드를 인식하면 Asus4·Csus4 가 남발됨(조 안의 3화음 harmonize 로 C·F·G·Am·Dm).
+- **전체 테스트에서 찾은 문제**(Demucs 가 설치되자 드러남): CPU 오토튠이 CREPE tiny 를 써서 음 하나를 반음 가까이 잘못 끌어감(CPU 는 pYIN, 평균 오차 0.04→0.02 반음), Demucs 가 노래를 보컬로 못 알아보면 빈 보컬로 후보정함(분리 없이 진행), 반주 분리 경로에서 직접 넣은 코드의 끝 마디가 잘림. 각각 수정 전 실패하는 회귀 테스트를 붙였습니다.
+- **새 화면**(사용자 디자인 시안: Organic 테마, 악보 화면 v2, 코드·가사 팝오버): 실제 Chromium(Playwright) 1440×1000·390×844 에서 실제 곡 결과 화면의 콘솔 오류·외부 요청 0, 390px 가로 넘침 없음. 12키·악기(B♭·E♭·F)·카포 계산, PDF 저장(%PDF 확인), 팝오버 코드 저장(Bm→B7→B7/D♯, 3박 위치·가사), 모바일 키 독·키 시트를 확인했습니다. 글꼴은 저장소 안에 넣어(OFL) 외부 요청이 없습니다.
+- `pytest`: **173 passed**(slow 포함, 엔진 설치 환경), frontend **85 passed**.
+
+검증 경계: 실제 곡 한 곡·악보 사진 한 장의 결과이며 정답 악보와 비교한 정량 정확도(음표 F1 등)는 아닙니다. GPU·Apple Silicon, 가사 인식, 유튜브 링크, 실제 모바일 Safari 는 미검증입니다.
 
 ## 2026-10-07 클라우드·로컬 통합
 
@@ -153,7 +166,7 @@ BROWSER_CHANNEL=chrome npm run check
 
 ## 남은 범위
 
-- 실제 녹음의 채보 정확도, 혼합 음원 분리, 실제 YouTube 동작, PDF 출력.
+- 정답 악보와 비교한 실제 녹음의 채보 정확도(혼합 음원 분리·PDF 출력·악보 사진 읽기는 실제 곡 1곡·사진 1장으로 동작 확인), 실제 YouTube 동작, GPU·Apple Silicon 속도, 가사 인식·피아노 고해상도 채보·Beat This! 박 추적(가중치 미설치).
 - 실제 마이크·웹캠, 하드웨어 지연·박자 보정, 모바일 Safari.
 - 브라우저/장치별 장시간 세션과 실제 음악을 사용한 추가 사용성 평가.
 - AirChoir 합주(Phase 3)는 별도 기능 설계 범위.
