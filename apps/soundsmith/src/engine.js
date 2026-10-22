@@ -14,6 +14,7 @@
 import { HARMONICS, envLevel } from './patch.js';
 import { makeTuner } from './tuning.js';
 import { FLAT_TONE, toneFilters } from './tone.js';
+import { pickZone } from './sample.js';
 
 const MAX_VOICES = 12;
 const clampHz = (f) => Math.min(20000, Math.max(20, f));
@@ -511,7 +512,8 @@ export class Instrument {
       v.sources.push(src);
       pitchTargets.push(src.detune);
     } else {
-      const s = this.sample;
+      // 멀티샘플(zones)이면 누른 음에서 가장 가까운 녹음을, 아니면 한 소리를 건반 전체에 늘려 쓴다
+      const s = this.sample.zones ? pickZone(this.sample.zones, midi) : this.sample;
       const src = node(ctx.createBufferSource());
       src.buffer = s.buffer;
       src.playbackRate.value = freq / s.rootHz;

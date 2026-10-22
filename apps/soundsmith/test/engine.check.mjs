@@ -13,6 +13,7 @@ const result = await page.evaluate(async () => {
   const { detectPitch, demoSample, findLoop } = await import('/src/sample.js');
   const out = [];
   for (const { patch } of FACTORY) {
+    if (patch.source === 'sample') continue; // 로컬 샘플 피아노는 샘플이 있어야 소리가 난다 (local-samples/)
     const buf = await renderNote(patch, { midi: patch.category === 'bass' ? 45 : 57, seconds: 2.5, hold: 1.5 });
     const x = buf.getChannelData(0);
     let peak = 0;

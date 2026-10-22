@@ -151,6 +151,22 @@ const RAW = [
     fx: { drive: 0.05, chorus: 0.35, reverb: 0.2, size: 1.6 },
     tone: { bass: -1, clarity: 2, air: 2.5, lowcut: 60 },
   },
+  // ---- 로컬 샘플 피아노 (저장소에는 샘플이 없음. 내 컴퓨터의 local-samples/ 폴더에 둔 파일을 불러온다) ----
+  // 샘플이 이미 자연스럽게 줄어들므로 서스테인 1 로 두고, 놓을 때만 짧게 닫는다.
+  {
+    name: '우드랜드 피아노 (로컬 샘플)', category: 'piano', source: 'sample',
+    filter: { cutoff: 16000, q: 0.5, keytrack: 0 },
+    ampEnv: { a: 0.002, d: 1, s: 1, r: 0.45 },
+    fx: { reverb: 0.18, size: 2.2 },
+    tone: { bass: 0.5, air: 0.5, lowcut: 30 },
+  },
+  {
+    name: '살라만더 그랜드 (로컬 샘플)', category: 'piano', source: 'sample',
+    filter: { cutoff: 16000, q: 0.5, keytrack: 0 },
+    ampEnv: { a: 0.002, d: 1, s: 1, r: 0.4 },
+    fx: { reverb: 0.15, size: 2 },
+    tone: { lowcut: 30 },
+  },
 ];
 
 // 쓰임새: 실험실에서 '어떤 자리에 쓸까요?'로 고를 때
@@ -182,11 +198,14 @@ const META = {
   '그랜듀어풍 그랜드': ['clean-grand', '또렷하고 단정한 그랜드 피아노 느낌. 군더더기 없이 맑게 울려요. (유료 The Grandeur 분위기를 합성으로 흉내)', ['band', 'solo', 'hymn']],
   '블루 빈티지풍 재즈': ['blue-vintage', '따뜻하고 어두운 빈티지 재즈 피아노. 테이프 잡음과 약한 흔들림이 살짝. (유료 Piano in Blue 분위기를 합성으로 흉내)', ['prayer', 'solo']],
   '키스케이프풍 팝 건반': ['pop-keys', '밝고 넓게 퍼지는 팝 건반. 밴드 안에서도 묻히지 않아요. (유료 Keyscape 분위기를 합성으로 흉내)', ['band', 'lead-under']],
+  '우드랜드 피아노 (로컬 샘플)': ['woodland-piano-local', '따뜻하고 포근한 업라이트 피아노(ockpii 무료 배포). 내 컴퓨터의 local-samples/woodland-piano 폴더에 샘플이 있을 때만 소리가 나요.', ['prayer', 'solo'], { localSet: 'woodland-piano' }],
+  '살라만더 그랜드 (로컬 샘플)': ['salamander-grand-local', '야마하 C5 그랜드 피아노(Alexander Holm, CC BY 3.0). 내 컴퓨터의 local-samples/salamander-grand 폴더에 샘플이 있을 때만 소리가 나요.', ['band', 'solo', 'hymn'], { localSet: 'salamander-grand' }],
 };
 
 export const FACTORY = RAW.map((p) => {
-  const [id, desc, uses] = META[p.name];
-  return { id, factory: true, desc, uses, patch: normalizePatch(p) };
+  const [id, desc, uses, extra = {}] = META[p.name];
+  // localSet: 이 음색이 쓰는 로컬 샘플 세트 이름 (local-samples/<localSet>/set.json). 없으면 합성 음색.
+  return { id, factory: true, desc, uses, ...extra, patch: normalizePatch(p) };
 });
 
 export const factoryById = (id) => FACTORY.find((f) => f.id === id) ?? null;

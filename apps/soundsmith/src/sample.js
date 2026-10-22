@@ -315,3 +315,68 @@ export function demoSample(sr = 44100, seconds = 3, hz = 110) {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// 로컬 멀티샘플 (건반 곳곳을 서로 다른 녹음으로 채우는 악기). 저장소에는 샘플을 넣지 않고,
+// 사용자가 자기 컴퓨터의 local-samples/ 폴더에 둔 파일만 쓴다. 아래는 브라우저 API 없이 검사할 수 있는 순수 함수.
+// ---------------------------------------------------------------------------
+
+const NOTE_PC = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
+
+/**
+ * 파일 이름에서 음과 벨로시티 층을 읽는다. 'C4.wav' · 'F#3.flac' · 'Bb2' · 'Ds1v8' (s = 샬프, Salamander 식) ·
+ * 'Woodland_A4_v2.ogg' · '60.wav'(MIDI 번호). 못 읽으면 null. C4 = 60.
+ */
+export function parseSampleName(file) {
+  const base = String(file).split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
+  const m = base.match(/(?:^|[^A-Za-z#])([A-Ga-g])([#sb]?)(-?\d)(?!\d)/);
+  let midi = null;
+  let rest = '';
+  if (m) {
+    const acc = m[2] === '#' || m[2] === 's' ? 1 : m[2] === 'b' ? -1 : 0;
+    midi = (Number(m[3]) + 1) * 12 + NOTE_PC[m[1].toLowerCase()] + acc;
+    rest = base.slice(m.index + m[0].length);
+  } else if (/^\d{1,3}$/.test(base) && Number(base) <= 127) {
+    midi = Number(base);
+  }
+  if (midi == null || midi < 0 || midi > 127) return null;
+  const l = rest.match(/v(?:el)?[-_ ]?(\d+)/i);
+  return { midi, layer: l ? Number(l[1]) : null };
+}
+
+/** local-samples/<세트>/set.json 을 믿고 쓸 수 있는 모양으로. 쓸 수 없으면 null. */
+export function normalizeSetManifest(raw) {
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.zones)) return null;
+  const zones = raw.zones
+    .filter((z) => z && typeof z.file === 'string' && z.file && !/^(\/|[a-z]+:|.*\.\.)/i.test(z.file) && Number.isInteger(z.root) && z.root >= 0 && z.root <= 127)
+    .map((z) => ({ file: z.file, root: z.root, layer: Number.isInteger(z.layer) ? z.layer : null }));
+  if (!zones.length) return null;
+  const str = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '');
+  return { v: 1, name: str(raw.name, 40) || '로컬 샘플', credit: str(raw.credit, 200), license: str(raw.license, 80), zones };
+}
+
+/**
+ * 같은 음에 벨로시티 층이 여러 개면 하나만 고른다 (메모리를 아끼려고). 층 번호가 있는 파일 전체의 가운데 층에 가장 가까운 것.
+ * 층 번호가 없는 파일은 그대로 둔다. 결과는 음 높이 순.
+ */
+export function pickLayers(zones, target = null) {
+  const layers = [...new Set(zones.map((z) => z.layer).filter((l) => l != null))].sort((a, b) => a - b);
+  const want = target ?? (layers.length ? layers[Math.floor((layers.length - 1) / 2)] : null);
+  const byRoot = new Map();
+  for (const z of zones) {
+    const cur = byRoot.get(z.root);
+    const dist = (q) => (q.layer == null || want == null ? 0 : Math.abs(q.layer - want));
+    if (!cur || dist(z) < dist(cur)) byRoot.set(z.root, z);
+  }
+  return [...byRoot.values()].sort((a, b) => a.root - b.root);
+}
+
+/** 연주할 음에서 가장 가까운 녹음 (같은 거리면 낮은 쪽 — 위로 올리는 것보다 아래로 내리는 게 더 자연스럽다). */
+export function pickZone(zones, midi) {
+  let best = null;
+  for (const z of zones) {
+    const d = Math.abs(z.root - midi);
+    if (!best || d < best.d || (d === best.d && z.root < best.z.root)) best = { z, d };
+  }
+  return best?.z ?? null;
+}

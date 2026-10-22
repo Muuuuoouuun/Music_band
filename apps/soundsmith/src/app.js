@@ -5,6 +5,7 @@ import { normalizePatch, setPath } from './patch.js';
 import { FACTORY, factoryById } from './presets.js';
 import { makeTuner, normalizeTuning, noteName, TEMPERAMENTS, NOTE_NAMES } from './tuning.js';
 import { bakeSample } from './sample.js';
+import { loadLocalSet } from './local-samples.js';
 import { Keyboard } from './keyboard.js';
 import { drawScope } from './draw.js';
 import * as store from './store.js';
@@ -33,6 +34,7 @@ class App {
     this.tuning = normalizeTuning(store.load('tuning', {}));
     this.studio.tuner = makeTuner(this.tuning);
     this.sample = null;
+    this.localSets = new Map(); // 불러온 로컬 샘플 세트 id -> { name, credit, license, sample }
     this.bakedSample = null;
     this.engineSample = null;
     this.live = null;
@@ -87,6 +89,9 @@ class App {
     this.live?.setPatch(patch);
     this.emit('patch', { phase, keepMacros });
     this.renderHeader();
+    // 로컬 샘플 피아노를 골랐으면 (카드·무대 패드·세트 리스트 모두 presetId 를 넘긴다) 샘플을 불러온다
+    const local = presetId !== undefined ? factoryById(presetId)?.localSet : null;
+    if (local) this.useLocalSet(local);
   }
 
   setParam(path, value, phase = 'change') {
@@ -182,6 +187,26 @@ class App {
     this.studio.bpm = bpm;
     this.live?.syncTempo();
     this.emit('tempo');
+  }
+
+  // ---- 로컬 샘플 (내 컴퓨터의 local-samples/ 폴더) ----
+  async useLocalSet(id) {
+    let set = this.localSets.get(id);
+    if (!set) {
+      let ctx;
+      try { ctx = await this.ensureAudio(); } catch { return; }
+      this.notice('로컬 샘플을 불러오는 중이에요…');
+      set = await loadLocalSet(id, ctx, { onProgress: (n, total) => { if (n === total) this.notice(`샘플 ${total}개를 읽었어요.`); } });
+      if (!set) {
+        this.notice(`local-samples/${id} 폴더에 샘플이 없어요. apps/soundsmith/local-samples/README.md 의 순서대로 놓으면 소리가 나요.`, 'bad');
+        return;
+      }
+      this.localSets.set(id, set);
+    }
+    this.engineSample = set.sample;
+    this.live?.setSample(set.sample);
+    this.emit('sample');
+    this.notice(`${set.name}${set.credit ? ` — ${set.credit}` : ''}${set.license ? ` (${set.license})` : ''}`, 'good');
   }
 
   // ---- 샘플 ----
