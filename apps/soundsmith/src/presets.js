@@ -112,6 +112,45 @@ const RAW = [
     ampEnv: { a: 0.001, d: 1, s: 1, r: 0.8 },
     fx: { reverb: 0.45, size: 3.5 },
   },
+  // ---- 피아노 (합성) --------------------------------------------------------
+  // 릴(@studiocvrg)에 나온 유료 피아노 3종의 '분위기만' 이 앱 엔진으로 흉내 낸 소리. 샘플·원음은 쓰지 않는다.
+  // 피아노 음색 공통: 배음 줄이기(custom) + 같은 줄 두 가닥의 맥놀이(겹치기 2, 미세 음정) + 해머 딱 소리(짧은 FM)
+  // + 치면 줄어드는 소리(서스테인 0) + 높은 음일수록 밝게(건반 따라가기).
+  {
+    name: '그랜듀어풍 그랜드', category: 'piano',
+    osc: [{ wave: 'custom', unison: 2, spread: 5, level: 0.62 }, { wave: 'triangle', level: 0.16, detune: 3 }],
+    custom: [1, 0.78, 0.52, 0.4, 0.26, 0.2, 0.12, 0.1, 0.07, 0.05, 0.04, 0.03, 0.02, 0.02, 0.01, 0.01, 0.01, 0, 0, 0, 0, 0, 0, 0],
+    fm: { amount: 0.1, ratio: 7, decay: 0.1, sustain: 0 },
+    filter: { cutoff: 4800, q: 0.5, env: 1.1, keytrack: 0.7 },
+    filterEnv: { a: 0.001, d: 0.4, s: 0.15, r: 0.3 },
+    ampEnv: { a: 0.002, d: 5, s: 0, r: 0.4 },
+    fx: { drive: 0, chorus: 0, reverb: 0.22, size: 2.4 },
+    tone: { mud: -1.5, clarity: 1.5, air: 1, lowcut: 30 },
+  },
+  {
+    name: '블루 빈티지풍 재즈', category: 'piano',
+    osc: [{ wave: 'custom', unison: 2, spread: 8, level: 0.6 }, { wave: 'sine', octave: -1, level: 0.22 }],
+    custom: [1, 0.6, 0.3, 0.2, 0.1, 0.07, 0.04, 0.03, 0.02, 0.01, 0.01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    fm: { amount: 0.06, ratio: 3, decay: 0.08, sustain: 0 },
+    noise: 0.05,
+    filter: { cutoff: 2300, q: 0.6, env: 0.8, keytrack: 0.5 },
+    filterEnv: { a: 0.001, d: 0.5, s: 0.2, r: 0.3 },
+    ampEnv: { a: 0.004, d: 3.6, s: 0, r: 0.5 },
+    lfo: { target: 'pitch', rate: 0.6, depth: 0.06, delay: 0.2 },
+    fx: { drive: 0.28, chorus: 0.15, reverb: 0.3, size: 1.8 },
+    tone: { bass: 2, mud: -1, clarity: -2, air: -5, lowcut: 40 },
+  },
+  {
+    name: '키스케이프풍 팝 건반', category: 'piano',
+    osc: [{ wave: 'custom', unison: 3, spread: 9, level: 0.58 }, { wave: 'triangle', octave: 1, level: 0.15 }],
+    custom: [1, 0.85, 0.7, 0.55, 0.42, 0.32, 0.24, 0.18, 0.13, 0.1, 0.07, 0.05, 0.04, 0.03, 0.02, 0.02, 0.01, 0.01, 0, 0, 0, 0, 0, 0],
+    fm: { amount: 0.2, ratio: 4, decay: 0.2, sustain: 0 },
+    filter: { cutoff: 8500, q: 0.5, env: 1.5, keytrack: 0.8 },
+    filterEnv: { a: 0.001, d: 0.3, s: 0.3, r: 0.25 },
+    ampEnv: { a: 0.002, d: 3, s: 0.05, r: 0.3 },
+    fx: { drive: 0.05, chorus: 0.35, reverb: 0.2, size: 1.6 },
+    tone: { bass: -1, clarity: 2, air: 2.5, lowcut: 60 },
+  },
 ];
 
 // 쓰임새: 실험실에서 '어떤 자리에 쓸까요?'로 고를 때
@@ -140,6 +179,9 @@ const META = {
   '디지털 플럭': ['digital-pluck', '짧게 톡 튀고 딜레이가 따라와요. 리듬 아르페지오에.', ['band']],
   '어쿠스틱 기타': ['acoustic-guitar', '줄을 실제로 계산해 뜯는 소리. 잔잔한 아르페지오에.', ['band', 'solo']],
   '하프': ['harp', '길게 울리는 하프. 찬송가 전주나 분산화음에.', ['hymn', 'prayer']],
+  '그랜듀어풍 그랜드': ['clean-grand', '또렷하고 단정한 그랜드 피아노 느낌. 군더더기 없이 맑게 울려요. (유료 The Grandeur 분위기를 합성으로 흉내)', ['band', 'solo', 'hymn']],
+  '블루 빈티지풍 재즈': ['blue-vintage', '따뜻하고 어두운 빈티지 재즈 피아노. 테이프 잡음과 약한 흔들림이 살짝. (유료 Piano in Blue 분위기를 합성으로 흉내)', ['prayer', 'solo']],
+  '키스케이프풍 팝 건반': ['pop-keys', '밝고 넓게 퍼지는 팝 건반. 밴드 안에서도 묻히지 않아요. (유료 Keyscape 분위기를 합성으로 흉내)', ['band', 'lead-under']],
 };
 
 export const FACTORY = RAW.map((p) => {

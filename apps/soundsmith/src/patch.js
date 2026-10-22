@@ -14,6 +14,7 @@ export const SOURCES = [
 export const CATEGORIES = [
   { id: 'pad', label: '패드' },
   { id: 'keys', label: '건반' },
+  { id: 'piano', label: '피아노' },
   { id: 'strings', label: '현·관' },
   { id: 'bell', label: '벨' },
   { id: 'bass', label: '베이스' },
@@ -405,7 +406,7 @@ export function mutatePatch(patch, amount = 0.3, seed = Date.now()) {
 // 지금 소리를 한두 문장으로 (실험실 '지금 소리' 칸). 숫자 부분은 굵게 보이도록 조각으로 돌려준다.
 // ---------------------------------------------------------------------------
 
-const NOUN = { pad: '패드예요', keys: '건반 소리예요', strings: '현악 소리예요', bell: '벨 소리예요', bass: '베이스예요', lead: '리드 소리예요', pluck: '플럭 소리예요' };
+const NOUN = { pad: '패드예요', keys: '건반 소리예요', piano: '피아노 소리예요', strings: '현악 소리예요', bell: '벨 소리예요', bass: '베이스예요', lead: '리드 소리예요', pluck: '플럭 소리예요' };
 
 export function describePatch(p) {
   const parts = [];
