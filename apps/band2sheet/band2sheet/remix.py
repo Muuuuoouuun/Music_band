@@ -144,7 +144,10 @@ class Analysis:
             return ""
         out = []
         last = self.spans[-1].end
-        for a, b in zip(bars, bars[1:] + [bars[-1] + (bars[-1] - bars[-2])]):
+        bar_len = bars[-1] - bars[-2]
+        while bars[-1] < last - 1e-3:  # 직접 넣은 코드가 찾은 박보다 길어도 끝 마디까지
+            bars.append(bars[-1] + bar_len)
+        for a, b in zip(bars, bars[1:] + [bars[-1] + bar_len]):
             if a >= last - 1e-3:
                 break
             names = []
@@ -243,6 +246,9 @@ def _melody_notes(vocal: np.ndarray, track: PitchTrack) -> list[Note]:
     return merged
 
 
+VOCAL_MIN_RATIO = 0.05  # 분리된 보컬이 반주의 이 비율(-26 dB)보다 작으면 분리를 믿지 않는다
+
+
 def _separate(mix: Path, work: Path, device: str | None, log: Log) -> tuple[np.ndarray, np.ndarray] | None:
     """Demucs 로 (보컬 모노, 반주 스테레오). 설치돼 있지 않거나 실패하면 None."""
     if not available("demucs"):
@@ -259,6 +265,12 @@ def _separate(mix: Path, work: Path, device: str | None, log: Log) -> tuple[np.n
     voc, _ = sf.read(str(stems["vocals"]), always_2d=True)
     rest = [sf.read(str(p), always_2d=True)[0] for n, p in stems.items() if n != "vocals"]
     backing = np.sum(rest, axis=0) if rest else np.zeros_like(voc)
+    if _rms(voc) < VOCAL_MIN_RATIO * _rms(backing):
+        # Demucs 가 노래를 보컬로 알아보지 못한 경우(악기 연주·허밍·합성음 등): 분리된 보컬은 거의 비어 있다.
+        # 빈 보컬로 화음·오토튠을 만들면 아무 소리도 안 나므로 분리 없이 원래 소리 전체를 노래로 쓴다.
+        log(f"   ! 분리된 보컬이 반주보다 {20 * np.log10(_rms(backing) / max(_rms(voc), 1e-9)):.0f} dB 작아 "
+            "분리 없이 진행합니다")
+        return None
     return voc.mean(axis=1), backing
 
 

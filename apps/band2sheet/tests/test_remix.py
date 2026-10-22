@@ -248,7 +248,7 @@ def test_remix_with_separated_backing(tmp_path, monkeypatch):
     wav = tmp_path / "band.wav"
     sf.write(wav, mix, SR)
 
-    def fake_separate(mix_path, out_dir, model_name="htdemucs", device=None, shifts=1):
+    def fake_separate(mix_path, out_dir, model_name="htdemucs", device=None, shifts=1, log=None):
         out_dir.mkdir(parents=True, exist_ok=True)
         paths = {}
         for name, y in (("vocals", voice), ("bass", backing), ("drums", 0 * voice), ("other", 0 * voice)):
@@ -380,3 +380,38 @@ def test_mux_preserves_full_video_when_replacement_audio_is_short(tmp_path):
                                "-f", "framemd5", "-"], check=True, capture_output=True).stdout
 
     assert frames(result) == frames(video), "All original video frames must remain unchanged"
+
+
+def test_empty_separated_vocal_falls_back_to_whole_mix(tmp_path, monkeypatch):
+    """Demucs 가 노래를 보컬로 못 알아봐 보컬 스템이 거의 빈 경우: 분리 없이 원래 소리를 노래로 쓴다."""
+    import band2sheet.remix as rm
+    import band2sheet.separate as sep
+
+    voice = sing()
+
+    def fake_separate(mix_path, out_dir, model_name="htdemucs", device=None, shifts=1, log=None):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        paths = {}
+        for name, y in (("vocals", 0.003 * voice), ("other", voice)):  # 노래가 통째로 'other' 로
+            paths[name] = out_dir / f"{name}.wav"
+            sf.write(paths[name], np.stack([y, y], axis=1), SR)
+        return paths
+
+    monkeypatch.setattr(rm, "available", lambda key: True)
+    monkeypatch.setattr(sep, "separate", fake_separate)
+    wav = tmp_path / "s.wav"
+    sf.write(wav, np.stack([voice, voice], axis=1), SR)
+    logs = []
+    assert rm._separate(wav, tmp_path / "w", None, logs.append) is None
+    assert any("분리 없이 진행" in m for m in logs)
+
+
+def test_user_chords_past_detected_beats_keep_last_bar():
+    """직접 넣은 코드가 믹스에서 찾은 박보다 길어도 코드 칸에 끝 마디까지 남는다 ('G|C|D|G' 가 'G|C|D' 로 잘리던 문제)."""
+    from band2sheet.remix import Analysis, _user_spans
+
+    beats = [i * 0.5 for i in range(11)]  # 4/4 로 셋째 마디 중간까지만 박을 찾은 경우
+    a = Analysis(Key.parse("G"), 120.0, beats, 4, 0, [], [], False, "user")
+    a.spans = _user_spans("G | C | D | G", a.bar_times(), 0.5, 4)
+    a.names = ["G", "C", "D", "G"]
+    assert a.chord_text().replace(" ", "") == "G|C|D|G"
