@@ -70,7 +70,34 @@ const result = await page.evaluate(async () => {
   };
   const flatAir = (await measure(pad)).bands[5];
   const upAir = (await measure({ ...pad, tone: { ...pad.tone, air: 12 } })).bands[5];
-  return { out, a432: p432?.hz, justE: pJust?.hz, sampleLateHz: late?.hz, latePeak, eqErr, flatAir, upAir };
+  // 합성 피아노 3종: 어느 음역에서도 기본음이 맞고 소리가 꺼지지 않는다
+  const pianos = [];
+  for (const id of ['clean-grand', 'blue-vintage', 'pop-keys']) {
+    for (const midi of [48, 60, 72]) {
+      const pb = await renderNote(FACTORY.find((f) => f.id === id).patch, { midi, seconds: 3, hold: 1.5 });
+      const px = pb.getChannelData(0);
+      const ph = detectPitch(px, pb.sampleRate, { start: Math.round(0.1 * pb.sampleRate), end: Math.round(1.2 * pb.sampleRate) });
+      let pk = 0;
+      for (const v of px) pk = Math.max(pk, Math.abs(v));
+      pianos.push({ id, midi, peak: pk, ratio: ph ? ph.hz / (440 * 2 ** ((midi - 69) / 12)) : null });
+    }
+  }
+  // 멀티샘플(로컬 샘플 피아노): C4·A4 두 녹음으로 사이 음을 가까운 쪽 기준으로 재생. 루프 없는 샘플도 끝까지 재생해야 한다
+  const zctx = new OfflineAudioContext(1, 44100, 44100);
+  const mkSine = (hz) => {
+    const zb = zctx.createBuffer(1, 44100 * 3, 44100);
+    const zd = zb.getChannelData(0);
+    for (let i = 0; i < zd.length; i++) zd[i] = 0.5 * Math.sin((2 * Math.PI * hz * i) / 44100);
+    return zb;
+  };
+  const zones = [{ root: 60, buffer: mkSine(261.6256), rootHz: 261.6256, start: 0, end: 3, loop: null }, { root: 69, buffer: mkSine(440), rootHz: 440, start: 0, end: 3, loop: null }];
+  const zoneRatios = [];
+  for (const midi of [62, 65, 67, 72]) {
+    const zb = await renderNote(FACTORY.find((f) => f.id === 'woodland-piano-local').patch, { midi, seconds: 2, hold: 1.5, sample: { zones } });
+    const zh = detectPitch(zb.getChannelData(0), 44100, { start: 4410, end: 66150 });
+    zoneRatios.push(zh ? zh.hz / (440 * 2 ** ((midi - 69) / 12)) : null);
+  }
+  return { out, pianos, zoneRatios, a432: p432?.hz, justE: pJust?.hz, sampleLateHz: late?.hz, latePeak, eqErr, flatAir, upAir };
 });
 console.table(result.out);
 // C 순정률 + A4=440 고정이면 C4=264, E4=330 Hz (C 와 5/4)
@@ -81,5 +108,8 @@ if (Math.abs(result.justE - 330) > 1) { console.error('순정률 E4 가 330 Hz �
 if (Math.abs(result.sampleLateHz - 220) > 1 || result.latePeak < 0.05) { console.error('샘플 루프가 A3 로 이어지지 않음'); process.exitCode = 1; }
 const fails = result.out.filter((r) => r.bad || r.peak < 0.02 || r.peak > 1.2);
 if (fails.length) { console.error('문제 있는 음색', fails); process.exitCode = 1; }
+const badPiano = result.pianos.filter((p) => !(p.ratio > 0.98 && p.ratio < 1.02) || p.peak < 0.05 || p.peak > 1);
+if (badPiano.length) { console.error('합성 피아노 음높이·크기 이상', badPiano); process.exitCode = 1; }
+if (result.zoneRatios.some((r) => !(r > 0.99 && r < 1.01))) { console.error('멀티샘플이 가까운 녹음 기준으로 재생되지 않음', result.zoneRatios); process.exitCode = 1; }
 if (Math.abs(result.a432 - 432) > 1.5) { console.error('A4=432 아님'); process.exitCode = 1; }
 await browser.close();

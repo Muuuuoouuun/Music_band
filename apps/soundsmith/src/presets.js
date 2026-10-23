@@ -126,10 +126,11 @@ const RAW = [
     ampEnv: { a: 0.002, d: 5, s: 0, r: 0.4 },
     fx: { drive: 0, chorus: 0, reverb: 0.22, size: 2.4 },
     tone: { mud: -1.5, clarity: 1.5, air: 1, lowcut: 30 },
+    volume: 1,
   },
   {
     name: '블루 빈티지풍 재즈', category: 'piano',
-    osc: [{ wave: 'custom', unison: 2, spread: 8, level: 0.6 }, { wave: 'sine', octave: -1, level: 0.22 }],
+    osc: [{ wave: 'custom', unison: 2, spread: 8, level: 0.6 }, { wave: 'sine', level: 0.2 }],
     custom: [1, 0.6, 0.3, 0.2, 0.1, 0.07, 0.04, 0.03, 0.02, 0.01, 0.01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     fm: { amount: 0.06, ratio: 3, decay: 0.08, sustain: 0 },
     noise: 0.05,
@@ -139,6 +140,7 @@ const RAW = [
     lfo: { target: 'pitch', rate: 0.6, depth: 0.06, delay: 0.2 },
     fx: { drive: 0.28, chorus: 0.15, reverb: 0.3, size: 1.8 },
     tone: { bass: 2, mud: -1, clarity: -2, air: -5, lowcut: 40 },
+    volume: 0.22, // 드라이브로 커지는 만큼 낮춰 다른 음색과 크기를 맞춤
   },
   {
     name: '키스케이프풍 팝 건반', category: 'piano',

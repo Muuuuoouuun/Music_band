@@ -63,10 +63,11 @@ src/
   engine.js       Web Audio 악기·스튜디오·Karplus-Strong·음색 굽기
   patch.js        음색 형식·범위·값 표시·도우미 슬라이더·랜덤·변주
   tone.js         톤 대역·필터 응답·밝기 균형 재기(FFT)·레퍼런스 제안·말 버튼
-  presets.js      기본 음색 14개
+  presets.js      기본 음색 19개 (피아노: 합성 3 + 로컬 샘플 2)
   tuning.js       기준음·음률·조옮김·스트레치·Scala
-  sample.js       무음 자르기·YIN 음높이·루프 찾기·크로스페이드·왕복·WAV·SFZ
+  sample.js       무음 자르기·YIN 음높이·루프 찾기·크로스페이드·왕복·WAV·SFZ·로컬 멀티샘플 이름 읽기
   looper.js       박 시계·퀀타이즈·겹쳐 녹음·실행 취소·예시 루프
+  local-samples.js  local-samples/<세트>/ 의 멀티샘플 피아노 불러오기 (샘플은 git 에 없음)
   zip.js          압축 없는 ZIP (SFZ 내보내기)
   keyboard.js     화면·컴퓨터·MIDI 건반
   draw.js         캔버스 그림
@@ -88,13 +89,19 @@ test/
 ## 테스트
 
 ```bash
-npm test                         # 단위 검사 48개 (Scala 왕복, 순정률 5/4, YIN, 루프·크로스페이드, 루퍼 겹쳐 녹음, ZIP,
+npm test                         # 단위 검사 60개 (Scala 왕복, 순정률 5/4, YIN, 루프·크로스페이드, 루퍼 겹쳐 녹음, ZIP,
                                  #   톤 필터 응답·대역 재기·레퍼런스 제안·말 버튼)
 npm start &                      # 다른 창에서
 PLAYWRIGHT_MODULE=$(npm root -g)/playwright/index.js npm run check
 ```
 
 브라우저 검사는 이미 설치된 Playwright·Chromium 을 씁니다(새로 받지 않음). 자동 검사는 소리가 나는지·숫자가 깨지지 않는지·주파수가 맞는지까지 확인하며, 실제로 듣기 좋은지는 사람이 들어 봐야 합니다.
+
+## 피아노
+
+- **합성 3종** (`건반` 옆 `피아노` 분류): 그랜듀어풍 그랜드 · 블루 빈티지풍 재즈 · 키스케이프풍 팝 건반. 유료 피아노 3종의 *분위기만* 이 앱의 합성 엔진으로 흉내 낸 것이고 원음·샘플은 쓰지 않습니다.
+- **로컬 샘플 2종**: 우드랜드 피아노(ockpii 무료 배포) · 살라만더 그랜드(CC BY 3.0). 샘플은 저장소에 없고 `local-samples/` 에 직접 놓으면 불러옵니다 → [설명](local-samples/README.md).
+- 배경과 결정 이유: [ADR 0001](../../docs/adr/0001-soundsmith-piano-presets.md)
 
 ## 한계 (목업)
 

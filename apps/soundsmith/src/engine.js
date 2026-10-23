@@ -525,7 +525,8 @@ export class Instrument {
       src.connect(mix);
       v.sources.push(src);
       v.sampleOffset = s.start;
-      if (!s.loop) src.stop(when + (s.end - s.start) / src.playbackRate.value);
+      // 루프 없는 샘플은 끝까지 재생하고 멈춘다. stop 은 start 뒤에만 부를 수 있어 아래에서 예약한다.
+      if (!s.loop) v.sampleStopAfter = (s.end - s.start) / src.playbackRate.value;
       pitchTargets.push(src.detune);
     }
     for (const param of pitchTargets) pitchLfo.connect(param);
@@ -560,6 +561,7 @@ export class Instrument {
       }
     };
     for (const src of v.sources) src.start(when, p.source === 'sample' ? v.sampleOffset : 0);
+    if (v.sampleStopAfter != null) v.sources[0].stop(when + v.sampleStopAfter);
     const life = v.sources[0];
     life.onended = () => {
       for (const [from, to] of v.lfoLinks) from.disconnect(to);
