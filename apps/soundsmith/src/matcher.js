@@ -7,8 +7,15 @@ import { PARAMS, getPath, setPath, normalizePatch } from './patch.js';
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const log2 = Math.log2;
 
-/** 원음과 비슷한 조건(같은 음·길이·누르는 시간)으로 음색을 연주해 잰다. */
-export async function renderFeatures(patch, ref, notes) {
+/**
+ * 원음과 비슷한 조건(같은 음·길이·누르는 시간)으로 음색을 연주해 잰다.
+ * events(MIDI 에서 꺼낸 [{ midi, velocity, on, off }])가 있으면 그 음·때·세기 그대로, 구간 길이도 원음과 똑같이.
+ */
+export async function renderFeatures(patch, ref, notes, events = null) {
+  if (events?.length) {
+    const buf = await renderNote(patch, { events, seconds: Math.max(0.3, ref.seconds), dry: false });
+    return { features: analyzeAudio([buf.getChannelData(0), buf.getChannelData(1)], buf.sampleRate), buffer: buf };
+  }
   const e = ref.envelope;
   const seconds = clamp(ref.seconds, 1.2, 4.5);
   const held = ref.kind === 'tone' && e?.releaseMeasured ? e.noteEnd - e.onset - 0.15 : seconds * 0.85;
@@ -32,17 +39,34 @@ function withEq(patch, ref, cand, limit) {
  * 분석 결과(ref)로 음색을 만들고 맞춤 EQ 까지 맞춘다.
  * 반환: { patch, plan, score, parts, cand, buffer, steps }
  */
-export async function matchSound(ref, presets, { name, onProgress = () => {} } = {}) {
-  const plan = planPatch(ref, presets, { name });
+/**
+ * MIDI 음과 실제 소리의 높이가 다르면(가상악기가 옥타브를 옮겨 연주한 경우) 들린 높이로 맞춘다.
+ * 한 음 구간에서만: 가장 긴 음을 잰 음높이에 맞춰 모든 음을 같은 만큼 옮긴다.
+ */
+export function alignEvents(ref, events) {
+  if (!events?.length || !ref.pitch || ref.kind !== 'tone') return events;
+  const main = events.reduce((a, b) => (b.off - b.on > a.off - a.on ? b : a));
+  // 다시 합성한 파형은 들린 높이에 맞춰 그렸으니, 비교 연주도 들린 높이로 (샘플이 건반과 다른 높이로 울리는 악기가 있다)
+  const shift = Math.round(ref.pitch.midi - main.midi);
+  return shift ? events.map((e) => ({ ...e, midi: e.midi + shift })) : events;
+}
+
+/** MIDI 음들이 0.25초 넘게 함께 울리나 (화음). 잠깐 겹치는 레가토·꼬리는 한 음으로 본다 */
+export const polyphonic = (events) => (events ?? []).some((e, i, all) => all.some((f, j) => j !== i && Math.min(e.off, f.off) - Math.max(e.on, f.on) > 0.25));
+
+export async function matchSound(ref, presets, { name, events = null, onProgress = () => {} } = {}) {
+  const plan = planPatch(ref, presets, { name, chord: polyphonic(events) });
+  plan.events = alignEvents(ref, events);
+  if (polyphonic(events)) plan.render = events.map((e) => e.midi);
   const limit = 9;
   onProgress('출발 음색 연주해 보는 중');
-  let best = { patch: plan.patch, ...(await renderFeatures(plan.patch, ref, plan.render)) };
+  let best = { patch: plan.patch, ...(await renderFeatures(plan.patch, ref, plan.render, plan.events)) };
   best.sim = similarity(ref, best.features);
   // 화음·믹스: 값으로 고른 후보 셋을 실제로 연주해 견주고 가장 닮은 것에서 출발한다
   if (plan.mode === 'nearest') {
     for (const alt of plan.alternatives ?? []) {
       onProgress(`'${alt.from}' 견주는 중`);
-      const r = await renderFeatures(alt.patch, ref, plan.render);
+      const r = await renderFeatures(alt.patch, ref, plan.render, plan.events);
       const sim = similarity(ref, r.features);
       if (sim.score > best.sim.score) {
         best = { patch: alt.patch, ...r, sim };
@@ -61,16 +85,29 @@ export async function matchSound(ref, presets, { name, onProgress = () => {} } =
     const reverb = clamp(Math.max(0.03, fx.reverb) * 10 ** ((ref.space.resid - c.resid) / 20), 0, 1);
     const size = clamp(fx.size * clamp(ref.space.rt60 / c.rt60, 0.5, 2), 0.5, 8);
     const patch = normalizePatch({ ...best.patch, fx: { ...fx, reverb, size } });
-    const r = await renderFeatures(patch, ref, plan.render);
+    const r = await renderFeatures(patch, ref, plan.render, plan.events);
     const sim = similarity(ref, r.features);
     if (sim.score < best.sim.score) break;
     best = { patch, ...r, sim };
     steps.push({ label: '잔향', score: sim.score });
   }
+  // 밝기: 원음과 만든 음색의 무게중심 차이만큼 필터를 옮긴다 (필터가 이미 끝까지 열렸으면 EQ 가 맡음)
+  for (let round = 0; round < 2; round++) {
+    const ratio = (ref.brightness.sustain + 1) / (best.features.brightness.sustain + 1);
+    const cutoff = best.patch.filter.cutoff;
+    if (Math.abs(log2(ratio)) < 0.25 || (ratio > 1 && cutoff >= 17000)) break;
+    onProgress(`밝기 맞추는 중 (${round + 1}/2)`);
+    const patch = setPath(best.patch, 'filter.cutoff', clamp(cutoff * ratio ** 1.3, 40, 18000));
+    const r = await renderFeatures(patch, ref, plan.render, plan.events);
+    const sim = similarity(ref, r.features);
+    if (sim.score < best.sim.score) break;
+    best = { patch, ...r, sim };
+    steps.push({ label: '밝기', score: sim.score });
+  }
   for (let round = 0; round < 2; round++) {
     onProgress(`톤 균형 맞추는 중 (${round + 1}/2)`);
     const patch = withEq(best.patch, ref, best.features, limit);
-    const r = await renderFeatures(patch, ref, plan.render);
+    const r = await renderFeatures(patch, ref, plan.render, plan.events);
     const sim = similarity(ref, r.features);
     if (sim.score < best.sim.score) break;
     best = { patch, ...r, sim };
@@ -102,6 +139,7 @@ export async function refineSound(ref, result, { onProgress = () => {}, rounds =
   let best = { patch: result.patch, features: result.cand, buffer: result.buffer, sim: { score: result.score, parts: result.parts } };
   const steps = [...result.steps];
   const notes = result.plan.render;
+  const events = result.plan.events;
   const limit = 9;
   for (let round = 0; round < rounds; round++) {
     const list = tweaks(best.patch);
@@ -114,7 +152,7 @@ export async function refineSound(ref, result, { onProgress = () => {}, rounds =
       const next = clamp(t.apply(v), spec.min, spec.max);
       if (Math.abs(next - v) < 1e-6) continue;
       const patch = normalizePatch(setPath(best.patch, t.path, next));
-      const r = await renderFeatures(patch, ref, notes);
+      const r = await renderFeatures(patch, ref, notes, events);
       const sim = similarity(ref, r.features);
       if (sim.score > best.sim.score) {
         best = { patch, ...r, sim };
@@ -126,7 +164,7 @@ export async function refineSound(ref, result, { onProgress = () => {}, rounds =
   }
   onProgress('톤 균형 다시 맞추는 중');
   const patch = withEq(best.patch, ref, best.features, limit);
-  const r = await renderFeatures(patch, ref, notes);
+  const r = await renderFeatures(patch, ref, notes, events);
   const sim = similarity(ref, r.features);
   if (sim.score >= best.sim.score) {
     best = { patch, ...r, sim };
@@ -136,11 +174,12 @@ export async function refineSound(ref, result, { onProgress = () => {}, rounds =
 }
 
 /** 지금 음색에 원음의 톤만 입히기: 지금 음색을 같은 음으로 연주해 재고, 차이를 맞춤 EQ 로. */
-export async function toneOnto(patch, ref, notes) {
+export async function toneOnto(patch, ref, notes, events = null) {
   const base = setPath(patch, 'eq.match', patch.eq.match.map(() => 0));
-  const first = await renderFeatures(base, ref, notes);
+  events = alignEvents(ref, events);
+  const first = await renderFeatures(base, ref, notes, events);
   const eq = fitGraphicEq(matchTarget(ref.bands, first.features.bands, { limit: 9 }));
   const out = applyTone(base, ref, eq);
-  const r = await renderFeatures(out, ref, notes);
+  const r = await renderFeatures(out, ref, notes, events);
   return { patch: out, before: similarity(ref, first.features).score, score: similarity(ref, r.features).score, cand: r.features };
 }

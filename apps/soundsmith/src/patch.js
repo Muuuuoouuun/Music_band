@@ -19,6 +19,7 @@ export const CATEGORIES = [
   { id: 'lead', label: '리드' },
   { id: 'pluck', label: '줄·플럭' },
   { id: 'choir', label: '합창·관악' },
+  { id: 'korean', label: '국악기' },
   { id: 'texture', label: '텍스처' },
 ];
 
@@ -183,8 +184,12 @@ export const PARAMS = {
   'filter.keytrack': num('건반 따라가기', 'pct', 0, 1),
   ...envParams('filterEnv'),
   ...envParams('ampEnv'),
+  'pitchEnv.amount': num('음정 엔벨로프', 'st', -24, 24),
+  'pitchEnv.decay': log('음정 엔벨로프 시간', 's', 0.005, 4),
   'lfo.target': choice('흔드는 곳', ['pitch', 'filter', 'amp'], ['음정 (비브라토)', '필터 (와우)', '볼륨 (트레몰로)']),
-  'lfo.rate': log('빠르기', 'Hz', 0.05, 12),
+  'lfo.shape': choice('LFO 모양', ['sine', 'triangle', 'square', 'sawtooth'], ['사인', '삼각', '사각 (게이트)', '톱니']),
+  'lfo.sync': choice('BPM 에 맞춤', ['off', '1/4', '1/8', '1/8T', '1/16'], ['끔', '4분', '8분', '8분 셋잇단', '16분']),
+  'lfo.rate': log('빠르기', 'Hz', 0.05, 30),
   'lfo.depth': num('깊이', 'pct', 0, 1),
   'lfo.delay': num('늦게 시작', 's', 0, 4),
   'fx.drive': num('드라이브', 'pct', 0, 1),
@@ -238,7 +243,8 @@ export const BASE_PATCH = {
   filter: { type: 'lowpass', slope: 12, cutoff: 8000, q: 0.7, env: 0, keytrack: 0.5 },
   filterEnv: { a: 0.01, d: 0.5, s: 0.5, r: 0.5 },
   ampEnv: { a: 0.005, d: 0.3, s: 0.8, r: 0.3 },
-  lfo: { target: 'pitch', rate: 5, depth: 0, delay: 0 },
+  pitchEnv: { amount: 0, decay: 0.08 },
+  lfo: { target: 'pitch', rate: 5, depth: 0, delay: 0, shape: 'sine', sync: 'off' },
   fx: {
     drive: 0, chorus: 0, delay: 0, delayBeats: 0.75, feedback: 0.35, delayMode: 'mono', delayTone: 4200,
     reverb: 0.15, reverbType: 'hall', size: 2.2, predelay: 0.02, damp: 0.5, tone: 0.6, shimmer: 0,
@@ -267,8 +273,10 @@ export function setPath(obj, path, value) {
 
 function clampParam(spec, v, fallback) {
   if (spec.kind === 'list') {
-    if (!Array.isArray(v) || v.length !== spec.len) return [...fallback];
-    return v.map((x, i) => (typeof x === 'number' && Number.isFinite(x) ? Math.min(spec.max, Math.max(spec.min, x)) : fallback[i]));
+    if (!Array.isArray(v) || v.length > spec.len || !v.length) return [...fallback];
+    // 짧으면 나머지는 0 (직접 그린 배음은 높은 배음 없이 적어 둘 수 있다)
+    const full = Array.from({ length: spec.len }, (_, i) => (i < v.length ? v[i] : 0));
+    return full.map((x, i) => (typeof x === 'number' && Number.isFinite(x) ? Math.min(spec.max, Math.max(spec.min, x)) : fallback[i]));
   }
   if (spec.kind === 'bool') return typeof v === 'boolean' ? v : fallback;
   if (spec.kind === 'enum') return spec.values.includes(v) ? v : fallback;
@@ -326,7 +334,7 @@ export function formatValue(path, v) {
     case 'cent': return `${signed(v)} cent`;
     case 'pct': return `${Math.round(v * 100)}%`;
     case 'oct': return path.endsWith('.octave') ? signed(v) : `${signed(v, 1)} oct`;
-    case 'st': return signed(v);
+    case 'st': return Number.isInteger(v) ? signed(v) : `${signed(v, 1)} st`;
     case 'voices': return v === 1 ? '1개' : `${v}개`;
     case 'q': return v.toFixed(v >= 10 ? 0 : 1);
     case 'dB': return `${signed(v, 1)} dB`;

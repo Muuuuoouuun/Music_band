@@ -76,6 +76,26 @@ test('엔벨로프: 느린 어택 패드와 줄어드는 줄', () => {
   assert.equal(measureEnvelope(new Float32Array(50), 0.01), null);
 });
 
+test('활로 켠 소리: 첫 순간만 솟고 이어지는 소리는 줄어드는 줄로 보지 않는다', () => {
+  // 해금처럼 활이 닿는 순간 솟았다가 절반쯤으로 이어짐
+  const bow = analyzeAudio(tone({ a: 0.004, s: 0.4, d: 0.1, noteEnd: 9, sec: 2 }), SR);
+  assert.ok(bow.envelope.sustain > 0.3, `sustain ${bow.envelope.sustain}`);
+  assert.ok(Object.values(bow.envelope).every((v) => v == null || typeof v === 'boolean' || Number.isFinite(v)));
+  assert.ok(Number.isFinite(similarity(analyzeAudio(tone(), SR), bow).score));
+});
+
+test('MIDI 음 힌트: 같은 음 이름이면 옥타브를 바로잡고, 다른 음 이름이면 들린 높이를 믿는다', () => {
+  // 기음이 없고 홀수 배음이 약한 220Hz → 혼자 재면 440Hz 로 들린다
+  const s = tone({ harm: (k) => (k === 1 ? 0 : k % 2 ? 0.3 / k : 1 / k) });
+  assert.ok(Math.abs(analyzeAudio(s, SR).pitch.hz - 440) < 2);
+  const fixed = analyzeAudio(s, SR, { pitchHint: 220 }).pitch;
+  assert.ok(Math.abs(fixed.hz - 220) < 1 && fixed.corrected, JSON.stringify(fixed));
+  // 가상악기 샘플이 건반과 다른 음으로 울리는 경우(징 등): 음 이름이 다르면 힌트를 쓰지 않는다
+  assert.ok(Math.abs(analyzeAudio(s, SR, { pitchHint: 311.13 }).pitch.hz - 440) < 2);
+  // 짝수 배음만 있는 소리는 한 옥타브 위가 맞는 높이
+  assert.ok(Math.abs(analyzeAudio(tone({ harm: (k) => (k % 2 ? 0 : 1 / k) }), SR).pitch.hz - 440) < 2);
+});
+
 test('비브라토·잡음·늘어난 배음·좌우 폭', () => {
   const vib = analyzeAudio(tone({ vib: 30, vibRate: 5.5 }), SR);
   assert.ok(vib.vibrato && Math.abs(vib.vibrato.rate - 5.5) < 0.4 && Math.abs(vib.vibrato.depth - 30) < 10, JSON.stringify(vib.vibrato));

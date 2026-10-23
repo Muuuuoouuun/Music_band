@@ -493,14 +493,22 @@ export class Instrument {
     smooth(this.widthGains.rl.gain, (1 - w) / 2);
     smooth(this.widthGains.lr.gain, (1 - w) / 2);
     smooth(this.volume.gain, p.volume);
-    smooth(this.lfo.frequency, p.lfo.rate);
+    if (this.lfo.type !== p.lfo.shape) this.lfo.type = p.lfo.shape;
+    smooth(this.lfo.frequency, this.lfoRate(p));
     const depth = { pitch: p.lfo.depth * 50, filter: p.lfo.depth * 2400, amp: p.lfo.depth * 0.5 };
     for (const [k, g] of Object.entries(this.lfoTo)) smooth(g.gain, p.lfo.target === k ? depth[k] : 0);
     // 이미 울리는 음에도 바로 들리게 하는 값들
     for (const v of this.voices) if (!v.released) v.live?.(p, now);
   }
 
+  /** LFO 빠르기: BPM 에 맞춤이면 박에서, 아니면 Hz 그대로 */
+  lfoRate(p = this.patch) {
+    const per = { '1/4': 1, '1/8': 2, '1/8T': 3, '1/16': 4 }[p.lfo.sync];
+    return per ? (this.env.bpm() / 60) * per : p.lfo.rate;
+  }
+
   syncTempo() {
+    if (this.patch.lfo.sync !== 'off') this.lfo.frequency.setTargetAtTime(this.lfoRate(), this.ctx.currentTime, 0.02);
     const beat = 60 / this.env.bpm();
     const t = Math.min(3.9, this.patch.fx.delayBeats * beat);
     this.dA.delayTime.setTargetAtTime(t, this.ctx.currentTime, 0.05);
@@ -790,6 +798,14 @@ export class Instrument {
       v.sources.push(wob);
     }
     for (const param of pitchTargets) pitchLfo.connect(param);
+    // 음정 엔벨로프: 누르는 순간 몇 반음 위(아래)에서 제 음으로 (북·장구·톰의 '둥', 라이저의 올라감)
+    if (Math.abs(p.pitchEnv.amount) > 0.01 && pitchTargets.length) {
+      const pe = node(ctx.createConstantSource());
+      pe.offset.setValueAtTime(p.pitchEnv.amount * 100, when);
+      pe.offset.setTargetAtTime(0, when, Math.max(0.002, p.pitchEnv.decay / 4));
+      for (const param of pitchTargets) pe.connect(param);
+      v.sources.push(pe);
+    }
 
     // 어택 소리: 해머·피크·숨이 닿는 순간의 짧은 잡음 (엔벨로프와 따로 바로 악기로)
     if (p.click > 0.001) {
@@ -973,16 +989,23 @@ function offlineEnv(ctx, tuning = {}, bpm = 72) {
 
 /**
  * 지금 음색으로 음(들)을 미리 연주해 AudioBuffer 로 (샘플러의 '음색 굽기', 음원 따라 만들기의 비교, 테스트).
- * notes 를 주면 화음으로 친다. dry 면 딜레이·잔향·쉬머를 뺀다.
+ * notes 를 주면 화음으로, events([{ midi, velocity, on, off }])를 주면 MIDI 처럼 친다. dry 면 딜레이·잔향·쉬머를 뺀다.
  */
-export async function renderNote(patch, { midi = 57, notes = null, velocity = 0.8, seconds = 3, hold = 2.2, tuning = {}, sample = null, sampleRate = 44100, dry = true } = {}) {
+export async function renderNote(patch, { midi = 57, notes = null, events = null, velocity = 0.8, seconds = 3, hold = 2.2, tuning = {}, sample = null, sampleRate = 44100, dry = true } = {}) {
   const ctx = new OfflineAudioContext(2, Math.round(sampleRate * seconds), sampleRate);
   const env = offlineEnv(ctx, tuning);
   const p = dry ? { ...patch, fx: { ...patch.fx, delay: 0, reverb: 0, shimmer: 0 } } : patch;
   const inst = new Instrument(env, p, sample);
-  const list = notes ?? [midi];
-  for (const m of list) inst.noteOn(m, velocity, 0.01);
-  for (const m of list) inst.noteOff(m, hold);
+  if (events) {
+    // MIDI 처럼 음마다 다른 때·세기 (on·off 는 시작 기준 초)
+    const order = [...events].sort((p, q) => p.on - q.on);
+    for (const e of order) inst.noteOn(e.midi, e.velocity ?? velocity, 0.01 + e.on);
+    for (const e of order) inst.noteOff(e.midi, 0.01 + Math.max(e.on + 0.01, e.off));
+  } else {
+    const list = notes ?? [midi];
+    for (const m of list) inst.noteOn(m, velocity, 0.01);
+    for (const m of list) inst.noteOff(m, hold);
+  }
   return rendered(ctx);
 }
 

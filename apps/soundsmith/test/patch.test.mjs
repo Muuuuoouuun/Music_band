@@ -137,6 +137,10 @@ test('목록 값(직접 그린 배음·맞춤 EQ)은 길이·범위를 지킨다
   const q = normalizePatch({ custom: Array.from({ length: CUSTOM_LEN }, (_, i) => (i === 3 ? 7 : i === 4 ? NaN : 0.5)) });
   assert.equal(q.custom[3], 1);
   assert.equal(q.custom[4], BASE_PATCH.custom[4]);
+  const short = normalizePatch({ custom: [1, 0.5, 0.25] }); // 높은 배음 없이 적어 두면 나머지는 0
+  assert.equal(short.custom.length, CUSTOM_LEN);
+  assert.deepEqual(short.custom.slice(0, 5), [1, 0.5, 0.25, 0, 0]);
+  assert.equal(normalizePatch({ custom: Array(CUSTOM_LEN + 1).fill(1) }).custom[1], BASE_PATCH.custom[1]);
   assert.deepEqual(harmonicsOf('square', undefined, 6), [1, 0, 1 / 3, 0, 1 / 5, 0]);
   assert.equal(harmonicsOf('custom', q.custom, 3)[1], 0.5);
 });

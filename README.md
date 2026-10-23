@@ -6,7 +6,7 @@
 |---|---|---|---|
 | **band2sheet · 악보 스튜디오** | 영상·음원·링크를 악기별 악보로 변환하고 코드·가사·음표 편집 | [apps/band2sheet](apps/band2sheet/README.md) | `http://127.0.0.1:8765` |
 | **AirChoir · 허밍 합창단** | 목소리 화음, 손동작 지휘, 녹음한 오브 반복 재생 (Phase 2) | [apps/airchoir](apps/airchoir/README.md) · [계획](apps/airchoir/PLAN.md) | `http://localhost:8000` |
-| **음색 공방 · Soundsmith** | 고급 신스 음색 45개·직접 그리는 배음·쉬머·맞춤 EQ, **음원 파일·유튜브 링크를 듣고 닮은 음색 만들기**, 샘플 가공(늘리기·거꾸로)·SFZ 내보내기, 4트랙 루퍼, 음률 튜닝 | [apps/soundsmith](apps/soundsmith/README.md) · [조사](docs/SYNTH_APP_RESEARCH.md) | `http://127.0.0.1:8010` |
+| **음색 공방 · Soundsmith** | 고급 신스 음색 64개(실제 멀티트랙을 재서 만든 국악기·신스 19개 포함)·직접 그리는 배음·쉬머·맞춤 EQ, **음원 파일·유튜브 링크를 듣고 닮은 음색 만들기**(MIDI 를 함께 넣으면 같은 음으로 견줌), 샘플 가공(늘리기·거꾸로)·SFZ 내보내기, 4트랙 루퍼, 음률 튜닝 | [apps/soundsmith](apps/soundsmith/README.md) · [조사](docs/SYNTH_APP_RESEARCH.md) | `http://127.0.0.1:8010` |
 
 ## band2sheet 시작
 

@@ -9,6 +9,7 @@ import { peaks, toMono, demoSample } from './sample.js';
 import { analyzeSample } from './view-sampler.js';
 import { renderNote } from './engine.js';
 import { normalizePatch } from './patch.js';
+import { parseMidi, noteRegions, eventsIn, playedNotes } from './midi.js';
 import { FACTORY } from './presets.js';
 import { noteName, NOTE_NAMES } from './tuning.js';
 
@@ -43,7 +44,7 @@ const rms = (chs) => {
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
 
 export function MatchView(root, app) {
-  const st = { name: null, buffer: null, over: null, overRate: 1, region: null, suggestions: [], analysis: null, result: null, busy: false, zoom: false, playing: null, link: null };
+  const st = { name: null, buffer: null, over: null, overRate: 1, region: null, suggestions: [], analysis: null, result: null, busy: false, zoom: false, playing: null, link: null, midi: null, midiName: null, track: -1, events: [] };
 
   // ---- 소리 가져오기 ----
   const fileInput = h('input', { type: 'file', accept: 'audio/*,video/mp4,.m4a,.mp3,.wav,.flac,.ogg', class: 'visually-hidden', id: nextId('mfile') });
@@ -58,11 +59,19 @@ export function MatchView(root, app) {
   const demoChord = h('button', { type: 'button' }, '예시: 패드 화음');
   const fromSampler = h('button', { type: 'button' }, '샘플러 소리로');
   const progress = h('p', { class: 'progress', role: 'status', 'aria-live': 'polite' });
+  const midiInput = h('input', { type: 'file', accept: '.mid,.midi,audio/midi,audio/x-midi', class: 'visually-hidden', id: nextId('midi') });
+  const trackSelect = h('select', { 'aria-label': 'MIDI 트랙', hidden: true });
+  const midiClear = h('button', { type: 'button', class: 'quiet small', hidden: true }, 'MIDI 빼기');
+  const midiState = h('p', { class: 'link-state midi-state' });
 
   const sourceBar = h('section', { class: 'match-source', 'aria-label': '소리 가져오기' },
     h('div', { class: 'match-row' },
       h('label', { class: 'file-btn primary', for: fileInput.id }, '음원 파일 불러오기', fileInput),
       demoTone, demoChord, fromSampler),
+    h('div', { class: 'match-row' },
+      h('label', { class: 'file-btn', for: midiInput.id }, 'MIDI 함께 불러오기 (선택)', midiInput),
+      trackSelect, midiClear),
+    midiState,
     h('div', { class: 'match-row link-row' },
       h('label', { for: urlId, class: 'label' }, '링크'),
       urlInput,
@@ -157,14 +166,122 @@ export function MatchView(root, app) {
     st.over = new Float32Array(n);
     for (let i = 0; i < n; i++) st.over[i] = (L[i * f] + R[i * f]) / 2;
     st.overRate = buf.sampleRate / f;
-    const len = Math.min(2.5, buf.duration);
-    st.suggestions = suggestRegions(st.over, st.overRate, { seconds: len, count: 3 }).map((r) => ({ start: r.start / st.overRate, end: r.end / st.overRate }));
-    st.region = { ...st.suggestions[0] };
+    if (st.midi) pickTrack();
+    makeSuggestions();
+    st.region = { start: st.suggestions[0].start, end: st.suggestions[0].end };
     st.zoom = false;
     zoomBtn.setAttribute('aria-pressed', 'false');
     sync();
     await analyzeRegion();
   }
+
+  // ---- MIDI: 멀티트랙 음원과 함께 받은 MIDI 로 '한 음 구간'을 찾고 같은 음으로 비교 연주 ----
+  const trackNotes = () => (st.midi && st.track >= 0 ? st.midi.tracks[st.track].notes : null);
+  /** 구간 추천: MIDI 가 있으면 다른 음과 겹치지 않는 긴 음(없으면 가장 긴 화음), 없으면 고르게 이어지는 곳 */
+  function makeSuggestions() {
+    const notes = trackNotes();
+    const dur = st.buffer.duration;
+    const fromMidi = notes ? noteRegions(notes, { count: 3, maxLength: MAX_REGION }).filter((r) => r.start < dur - MIN_REGION) : [];
+    if (fromMidi.length) {
+      st.suggestions = fromMidi.map((r) => ({ start: r.start, end: Math.min(dur, r.end), label: r.notes.map((n) => noteName(n.midi)).join('·') }));
+      return;
+    }
+    const len = Math.min(2.5, dur);
+    st.suggestions = suggestRegions(st.over, st.overRate, { seconds: len, count: 3 }).map((r) => ({ start: r.start / st.overRate, end: r.end / st.overRate }));
+  }
+  /** 음원과 가장 맞는 트랙: 이름이 겹치는 정도 + 음표가 소리 나는 때와 겹치는 정도 */
+  function pickTrack() {
+    const tokens = (t) => new Set((t || '').toLowerCase().split(/[^0-9a-z가-힣]+/).filter((w) => w.length > 1 || /\d/.test(w)));
+    const mine = tokens(st.name);
+    let active = null;
+    if (st.over) {
+      const hop = Math.round(st.overRate * 0.05);
+      const frames = Math.floor(st.over.length / hop);
+      const db = Array.from({ length: frames }, (_, f) => {
+        let e = 0;
+        for (let i = f * hop; i < (f + 1) * hop; i++) e += st.over[i] * st.over[i];
+        return 10 * Math.log10(e / hop + 1e-12);
+      });
+      const top = Math.max(...db);
+      active = db.map((v) => v > top - 40);
+    }
+    let best = -1;
+    let bestScore = -Infinity;
+    st.midi.tracks.forEach((t, i) => {
+      if (!t.notes.length) return;
+      const name = [...tokens(t.name)].filter((w) => mine.has(w)).length;
+      let timing = 0;
+      if (active) {
+        let on = 0;
+        let all = 0;
+        for (const n of playedNotes(t.notes)) {
+          for (let x = n.start; x < n.end; x += 0.05) {
+            all++;
+            if (active[Math.floor(x / 0.05)]) on++;
+          }
+        }
+        timing = all ? on / all : 0;
+      }
+      const score = name * 2 + timing * 3;
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    });
+    st.track = best;
+    renderTracks();
+  }
+  function renderTracks() {
+    trackSelect.hidden = !st.midi;
+    midiClear.hidden = !st.midi;
+    if (!st.midi) {
+      midiState.textContent = '';
+      return;
+    }
+    trackSelect.replaceChildren(...st.midi.tracks.map((t, i) => (t.notes.length ? h('option', { value: i, selected: i === st.track || null }, `${t.name || `트랙 ${i}`} · 음 ${t.notes.length}개`) : null)).filter(Boolean));
+    const t = st.midi.tracks[st.track];
+    midiState.textContent = t
+      ? `MIDI '${st.midiName}' · 트랙 '${t.name || st.track}' 를 이 음원과 맞췄어요. 구간 추천은 다른 음과 겹치지 않는 긴 음이고, 만들 때 같은 음·때·세기로 견줘요.`
+      : `MIDI '${st.midiName}' 에 음표가 없어요.`;
+    midiState.dataset.state = t ? 'on' : 'off';
+  }
+  midiInput.addEventListener('change', async () => {
+    const f = midiInput.files?.[0];
+    midiInput.value = '';
+    if (!f) return;
+    try {
+      st.midi = parseMidi(new Uint8Array(await f.arrayBuffer()));
+      st.midiName = f.name.replace(/\.[^.]+$/, '');
+      pickTrack();
+      if (st.buffer) {
+        makeSuggestions();
+        st.region = { start: st.suggestions[0].start, end: st.suggestions[0].end };
+        sync();
+        await analyzeRegion();
+      }
+    } catch {
+      app.notice('MIDI 파일을 읽지 못했어요. .mid 파일인지 확인하세요.', 'bad');
+    }
+  });
+  trackSelect.addEventListener('change', async () => {
+    st.track = Number(trackSelect.value);
+    renderTracks();
+    if (!st.buffer) return;
+    makeSuggestions();
+    st.region = { start: st.suggestions[0].start, end: st.suggestions[0].end };
+    sync();
+    await analyzeRegion();
+  });
+  midiClear.addEventListener('click', async () => {
+    st.midi = null;
+    st.track = -1;
+    st.events = [];
+    renderTracks();
+    if (!st.buffer) return;
+    makeSuggestions();
+    sync();
+    await analyzeRegion();
+  });
 
   async function loadData(name, data) {
     setBusy('소리 읽는 중…');
@@ -274,7 +391,11 @@ export function MatchView(root, app) {
     if (!st.buffer) return;
     st.result = null;
     await nextFrame();
-    st.analysis = analyzeAudio(regionChannels(), st.buffer.sampleRate);
+    const notes = trackNotes();
+    st.events = notes ? eventsIn(notes, st.region.start, st.region.end) : [];
+    // 한 음이면 MIDI 음높이를 알려 줘서 옥타브 착각을 막는다
+    const hint = st.events.length === 1 ? 440 * 2 ** ((st.events[0].midi - 69) / 12) : null;
+    st.analysis = analyzeAudio(regionChannels(), st.buffer.sampleRate, { pitchHint: hint });
     sync();
   }
   startInput.addEventListener('change', () => {
@@ -396,7 +517,7 @@ export function MatchView(root, app) {
     setBusy('출발 음색 고르는 중…');
     await nextFrame();
     try {
-      st.result = await matchSound(st.analysis, pool(), { name: madeName('닮은 음색'), onProgress: (t) => { progress.textContent = `${t}…`; } });
+      st.result = await matchSound(st.analysis, pool(), { name: madeName('닮은 음색'), events: st.events, onProgress: (t) => { progress.textContent = `${t}…`; } });
       app.setPatch(st.result.patch, { phase: 'change', presetId: null });
       app.notice(`닮은 정도 ${st.result.score}% 인 음색을 만들어 건반에 걸었어요. '더 비슷하게'로 조금 더 맞춰 볼 수 있어요.`, 'good');
     } finally {
@@ -424,7 +545,7 @@ export function MatchView(root, app) {
     setBusy('지금 음색을 같은 음으로 연주해 재는 중…');
     try {
       const notesToPlay = planPatch(st.analysis, pool()).render;
-      const r = await toneOnto(app.patch, st.analysis, notesToPlay);
+      const r = await toneOnto(app.patch, st.analysis, notesToPlay, st.events);
       app.setPatch({ ...r.patch, name: `${app.patch.name.replace(/ · 톤$/, '')} · 톤`.slice(0, 40) }, { phase: 'change', presetId: null });
       app.notice(`'${st.name}'의 톤 균형·공간·폭을 입혔어요 (닮은 정도 ${r.before}% → ${r.score}%). 맞춤 EQ 는 음색 만들기의 EQ 에서 고칠 수 있어요.`, 'good');
     } finally {
@@ -480,7 +601,9 @@ export function MatchView(root, app) {
     const pk = peaks(st.over, Math.max(100, Math.round(over.clientWidth || 600)), a, Math.min(st.over.length, z));
     let playhead = null;
     if (st.playing?.which === 'ref' && app.studio.ctx) playhead = st.playing.from + (app.studio.ctx.currentTime - st.playing.t0);
-    drawOverview(over, pk, { view: v, region: st.region, playhead, marks: st.suggestions });
+    const notes = trackNotes();
+    const marks = notes ? playedNotes(notes).map((n) => ({ start: n.start, end: n.end })) : st.suggestions;
+    drawOverview(over, pk, { view: v, region: st.region, playhead, marks });
   }
   function syncRegion() {
     const r = st.region;
@@ -514,11 +637,11 @@ export function MatchView(root, app) {
       type: 'button', class: 'chip-btn',
       'aria-pressed': String(Math.abs(r.start - st.region.start) < 0.05 && Math.abs(r.end - st.region.end) < 0.05),
       onclick: () => {
-        st.region = { ...r };
+        st.region = { start: r.start, end: r.end };
         sync();
         scheduleAnalyze();
       },
-    }, `${i + 1} · ${fmt(r.start)}`)));
+    }, r.label ? `${i + 1} · ${r.label} · ${fmt(r.start)}` : `${i + 1} · ${fmt(r.start)}`)));
     syncRegion();
     const a = st.analysis;
     if (!a) return;
@@ -543,6 +666,7 @@ export function MatchView(root, app) {
     ];
     if (a.kind === 'tone') rows.push(['배음', `${a.harmonics.filter((v) => v > 0.01).length}개 · 숨소리 ${a.noiseLevel > 0.005 ? '있음' : '거의 없음'}${a.inharmonicity > 0.005 ? ' · 위로 늘어난 배음' : ''}`]);
     if (a.kind === 'mix') rows.push(['음 시작', `초당 ${a.onsetRate.toFixed(1)}번`]);
+    if (st.midi) rows.push(['MIDI', st.events.length ? `이 구간의 음 ${st.events.map((e) => noteName(e.midi)).join(' ')}${a.pitch?.corrected ? ' · 음높이를 MIDI 로 바로잡음' : ''}` : '이 구간에 MIDI 음이 없어요']);
     facts.replaceChildren(...rows.flatMap(([dt, dd]) => [h('dt', {}, dt), h('dd', {}, dd)]));
     const res = st.result;
     requestAnimationFrame(() => {

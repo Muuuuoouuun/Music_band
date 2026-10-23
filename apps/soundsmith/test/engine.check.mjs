@@ -1,5 +1,5 @@
 // 브라우저에서 엔진 확인: 기본 음색마다 한 음을 미리 연주(OfflineAudioContext)해서
-// 소리가 나는지, 숫자가 깨지지 않는지, 튜닝대로 음높이가 맞는지 본다.
+// 소리가 나는지, 숫자가 깨지지 않는지, 튜닝대로 음높이가 맞는지, 음정 엔벨로프·MIDI 이벤트 연주가 맞는지 본다.
 // 실행: npm start 로 서버를 띄운 뒤 node test/engine.check.mjs
 import { chromium, launchOptions } from './browser.mjs';
 
@@ -58,6 +58,12 @@ const result = await page.evaluate(async () => {
   const custom = normalizePatch({ osc: [{ wave: 'custom' }], custom: Array.from({ length: 128 }, (_, i) => (i < 12 ? 1 / (i + 1) : 0)), fx: { reverb: 0 } });
   const pCustom = detectPitch((await renderNote(custom, { midi: 60, seconds: 1, hold: 0.9 })).getChannelData(0), 44100);
   const heavy = stat(await renderNote(normalizePatch({ ...wideBase, filter: { slope: 24, q: 8, cutoff: 900 }, fx: { shimmer: 1, lofi: 1, phaser: 1, comp: 1, reverb: 0.6 }, drift: 1, click: 1, eq: { low: 12, high: 12, match: Array(10).fill(15) } }), { notes: [48, 55, 64], seconds: 2, hold: 1.5, dry: false }));
+  // 음정 엔벨로프(-12반음에서 제자리로 올라옴)와 MIDI 이벤트 연주(C4 다음 G4)
+  const pitchAt = (buf, t0, t1) => detectPitch(buf.getChannelData(0), 44100, { start: Math.round(t0 * 44100), end: Math.round(t1 * 44100) })?.hz;
+  const riser = await renderNote(normalizePatch({ osc: [{ wave: 'sine', level: 0.8 }], pitchEnv: { amount: -12, decay: 2 }, fx: { reverb: 0 } }), { midi: 69, seconds: 3, hold: 2.9 });
+  const pitchEnv = { early: pitchAt(riser, 0.1, 0.25), late: pitchAt(riser, 2.3, 2.8) };
+  const seq = await renderNote(normalizePatch({ osc: [{ wave: 'sine', level: 0.8 }], ampEnv: { a: 0.005, s: 1, r: 0.05 }, fx: { reverb: 0 } }), { events: [{ midi: 60, velocity: 0.8, on: 0, off: 0.5 }, { midi: 67, velocity: 0.8, on: 0.6, off: 1.1 }], seconds: 1.3 });
+  const events = { first: pitchAt(seq, 0.1, 0.45), second: pitchAt(seq, 0.7, 1.05) };
   // 음원 따라 만들기: 기본 음색 소리를 듣고 그 음색을 빼고 만들어도 닮게
   const { analyzeAudio } = await import('/src/analyze.js');
   const { matchSound } = await import('/src/matcher.js');
@@ -97,7 +103,7 @@ const result = await page.evaluate(async () => {
   let tailE = 0;
   for (let i = demo.length + 4410; i < wl.length; i++) tailE += wl[i] * wl[i];
   const throughFx = { seconds: wetBuf.length / 44100, tailE, bad: [...wl].filter((v) => !Number.isFinite(v)).length };
-  return { out, a432: p432?.hz, justE: pJust?.hz, sampleLateHz: late?.hz, latePeak, narrow, wide, customHz: pCustom?.hz, heavy, matches, fx, throughFx };
+  return { out, pitchEnv, events, a432: p432?.hz, justE: pJust?.hz, sampleLateHz: late?.hz, latePeak, narrow, wide, customHz: pCustom?.hz, heavy, matches, fx, throughFx };
 });
 console.table(result.out);
 // C 순정률 + A4=440 고정이면 C4=264, E4=330 Hz (C 와 5/4)
@@ -107,6 +113,9 @@ if (Math.abs(result.sampleLateHz - 220) > 1 || result.latePeak < 0.05) { console
 const fails = result.out.filter((r) => r.bad || r.peak < 0.02 || r.peak > 1.2);
 if (fails.length) { console.error('문제 있는 음색', fails); process.exitCode = 1; }
 if (Math.abs(result.a432 - 432) > 1.5) { console.error('A4=432 아님'); process.exitCode = 1; }
+console.log({ pitchEnv: result.pitchEnv, events: result.events });
+if (!(result.pitchEnv.early < 440 * 0.75 && Math.abs(result.pitchEnv.late - 440) < 3)) { console.error('음정 엔벨로프가 아래에서 올라오지 않음'); process.exitCode = 1; }
+if (Math.abs(result.events.first - 261.63) > 2 || Math.abs(result.events.second - 392) > 2) { console.error('MIDI 이벤트를 차례대로 연주하지 않음'); process.exitCode = 1; }
 console.log({ narrowSide: result.narrow.side, wideSide: result.wide.side, customHz: result.customHz, heavyBad: result.heavy.bad });
 console.table(result.matches);
 if (result.narrow.side > 0.002 || result.wide.side < 0.2) { console.error('스테레오 폭이 맞지 않음'); process.exitCode = 1; }

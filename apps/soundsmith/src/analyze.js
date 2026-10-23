@@ -185,7 +185,13 @@ export function measureEnvelope(env, frameSec) {
   // 겹친 소리의 맥놀이로 봉우리가 늦게 잡혀도, 고르게 이어지는 높이(중앙값)의 90% 에 닿는 때로 어택을 다시 잰다
   let half = 0;
   while (half < env.length - 1 && env[half] < env[top] * 0.5) half++;
-  const plateau = median(Array.from(env.slice(half, Math.max(half + 1, Math.min(env.length, top + Math.round(1 / frameSec))))));
+  // 0.5초 넘게 부풀어 오른 소리는 최고점 뒤 절반 아래로 떨어지기 전까지만 본다 (부풀다가 뚝 끊기는 소리에서 끊긴 뒤를 섞지 않게)
+  let stop = Math.min(env.length - 1, top + Math.round(1 / frameSec) - 1);
+  if (onset <= top - f(0.5)) {
+    stop = top;
+    while (stop < env.length - 1 && stop < top + Math.round(1 / frameSec) && env[stop + 1] >= env[top] * 0.5) stop++;
+  }
+  const plateau = median(Array.from(env.slice(half, Math.max(half + 1, stop + 1))));
   let early = onset;
   while (early < attackEnd && env[early] < plateau * 0.9) early++;
   attackEnd = Math.min(attackEnd, early);
@@ -215,8 +221,14 @@ export function measureEnvelope(env, frameSec) {
   let sustain = span > 3 ? Math.min(1, median(mid) * level) : 0;
   // 끝까지 줄어들기만 하면(타악·줄·피아노) 서스테인 0 으로 본다
   const at = (x) => env[peakIdx + Math.floor(span * x)] / peak;
-  const decaying = off == null && span > 8 && at(0.8) < at(0.3) * 0.6 && at(0.55) < at(0.3) * 0.85;
+  // 줄·타악은 dB 로 보면 곧은 선으로 줄어든다. 활·숨처럼 첫소리만 튀고 몸통이 이어지는 소리는 처음만 가파르고
+  // 그 뒤는 완만하다 (해금에서 확인) → 그때는 서스테인으로 본다
+  const dB = (x) => 20 * Math.log10(Math.max(1e-6, at(x)));
+  const firstRate = (dB(0) - dB(0.15)) / 0.15;
+  const laterRate = (dB(0.3) - dB(0.8)) / 0.5;
+  const decaying = off == null && span > 8 && at(0.8) < at(0.3) * 0.6 && at(0.55) < at(0.3) * 0.85 && laterRate > firstRate * 0.45;
   if (decaying) sustain = 0;
+  if (!Number.isFinite(sustain)) sustain = 0;
   const target = sustain + 0.37 * (1 - sustain);
   let d = peakIdx;
   while (d < sustainEnd && env[d] / peak > target) d++;
@@ -228,7 +240,7 @@ export function measureEnvelope(env, frameSec) {
     if (slope > 0) release = clamp((5 * 8.69) / slope, 0.03, 10);
   }
   return {
-    attack: clamp((attackEnd - onset) * frameSec, 0.001, 8),
+    attack: clamp(((attackEnd - onset) * frameSec) / 0.8, 0.001, 8),
     decay,
     sustain: clamp(sustain, 0, 1),
     release: release ?? clamp(sustain > 0.2 ? 0.3 : decay * 0.2, 0.03, 3),
@@ -456,7 +468,7 @@ function chromaOf(power, sr, n) {
  * 고른 구간을 잰다. channels: [L, R?] Float32Array. 반환값은 음색 만들기·닮은 정도 계산에 쓰는 특징 묶음.
  * kind: 'tone' 한 음 | 'chord' 화음·지속음 | 'mix' 여러 악기·여러 음 | 'noise' 음높이 없음 | 'silent'
  */
-export function analyzeAudio(channels, sr, { start = 0, end = null, maxSeconds = 12 } = {}) {
+export function analyzeAudio(channels, sr, { start = 0, end = null, maxSeconds = 12, pitchHint = null } = {}) {
   const L = channels[0];
   const R = channels[1] ?? channels[0];
   const stop = Math.min(end ?? L.length, L.length, start + Math.round(maxSeconds * sr));
@@ -486,7 +498,7 @@ export function analyzeAudio(channels, sr, { start = 0, end = null, maxSeconds =
     stableB = Math.max(stableA + Math.round(sr * 0.12), i * Math.round(sr * frameSec));
   }
   stableB = Math.min(len, Math.max(stableB, stableA + Math.round(sr * 0.1)));
-  const pitch = detectPitch(mono, sr, { start: Math.min(stableA, len - 1), end: stableB });
+  let pitch = detectPitch(mono, sr, { start: Math.min(stableA, len - 1), end: stableB });
   const n = 4096;
   const power = averagePower(mono, 0, len, n);
   const bands = bandLevels(power, sr, n);
@@ -523,6 +535,31 @@ export function analyzeAudio(channels, sr, { start = 0, end = null, maxSeconds =
     const wob = dominantWobble(cents, 100, 3, 9);
     if (wob && wob.depth > 6 && wob.strength > 2.2) vibrato = { rate: wob.rate, depth: Math.round(wob.depth) };
     harm = measureHarmonics(mono, sr, pitch.hz, stableA, stableB, CUSTOM_LEN, vibrato?.depth ?? 0);
+  }
+  // 음높이 고르기: 짝수 배음만 센 소리는 한 옥타브 위가 진짜 음이고(Physular 에서 확인), MIDI 로 알려 준 음이 있으면
+  // 그 음(옥타브는 들린 쪽에 맞춤)과 견줘 배음이 더 잘 설명되는 쪽을 고른다
+  const candidates = [];
+  if (pitch && harm) {
+    const a0 = harm.amps;
+    if (a0[0] < 0.15 && a0[2] < 0.15 && a0[4] < 0.15 && a0[1] > 0.5) candidates.push(pitch.hz * 2);
+  }
+  // MIDI 음은 옥타브만 바로잡는 데 쓴다. 가상악기 샘플은 건반과 다른 높이로 울릴 수 있어서(징·가야금에서 확인)
+  // 음 이름이 다르면 들린 높이를 믿는다
+  if (pitchHint) {
+    const off = pitch ? 1200 * Math.log2(pitchHint / pitch.hz) : 0;
+    if (!pitch || Math.abs(off - 1200 * Math.round(off / 1200)) <= 100) candidates.push(pitchHint);
+  }
+  for (const hz of candidates) {
+    // 같은 음 근처(옥타브가 아님)는 다시 재지 않는다: 살짝 어긋난(디튠된) 소리를 MIDI 높이로 재면 배음을 놓친다
+    if (pitch && Math.abs(1200 * Math.log2(hz / pitch.hz)) < 600) continue;
+    const h2 = measureHarmonics(mono, sr, hz, stableA, stableB, CUSTOM_LEN, vibrato?.depth ?? 0);
+    const firstOk = h2.amps.findIndex((v) => v > 0.3) <= 1;
+    if (!harm || (firstOk && h2.harmonicity >= harm.harmonicity * 0.95)) {
+      harm = h2;
+      const midi = 69 + 12 * Math.log2(hz / 440);
+      const note = Math.round(midi);
+      pitch = { ...(pitch ?? { clarity: 0.8 }), hz, midi, note, cents: (midi - note) * 100, corrected: true };
+    }
   }
   // 트레몰로: 서스테인의 크기 흔들림 (dB)
   let tremolo = null;
@@ -808,6 +845,7 @@ export function similarity(ref, cand) {
   let score = 0;
   let total = 0;
   for (const [k, v] of Object.entries(w)) {
+    if (!Number.isFinite(parts[k])) parts[k] = 0.5; // 잴 수 없는 항목은 가운데 값으로 (점수가 NaN 이 되지 않게)
     score += v * parts[k];
     total += v;
   }
@@ -962,6 +1000,7 @@ export function patchTraits(p) {
     bright: (den > 0 ? num / den : 1000) * fmLift,
     width: p.fx.width * (1 + 0.3 * (p.osc[0].unison > 1)) * (1 + 0.4 * p.fx.chorus),
     space: p.fx.reverb,
+    noise: p.source === 'synth' ? clamp(p.noise * 1.5, 0, 1) : 0,
   };
 }
 
@@ -973,6 +1012,7 @@ export function audioTraits(a) {
     bright: a.brightness.sustain,
     width: 0.7 + a.width * 1.8,
     space: a.space.amount,
+    noise: clamp(a.noiseLevel * 0.8, 0, 1),
   };
 }
 
@@ -982,7 +1022,8 @@ export function traitDistance(x, y) {
     + Math.abs(x.sustain - y.sustain) * 2.2
     + Math.abs(log2((x.bright + 50) / (y.bright + 50))) * 1.2
     + Math.abs(x.width - y.width) * 0.6
-    + Math.abs(x.space - y.space) * 0.8;
+    + Math.abs(x.space - y.space) * 0.8
+    + Math.abs((x.noise ?? 0) - (y.noise ?? 0)) * 1.5;
 }
 
 /** 화음·믹스: 가장 닮은 기본 음색에서 출발해 공간·폭·엔벨로프를 원음 쪽으로 옮긴다. */
@@ -1013,8 +1054,14 @@ function adaptToMix(from, a, name) {
   p.fx.reverb = round(mix(p.fx.reverb, a.space.amount, a.space.measured ? 0.8 : 0.4), 2);
   if (a.space.measured) p.fx.size = round(a.space.rt60, 2);
   p.fx.width = round(clamp(mix(p.fx.width, 0.7 + a.width * 1.8, 0.7), 0, 2), 2);
-  if (a.kind === 'chord' && a.envelope.attack > 0.15) p.ampEnv.a = round(mix(p.ampEnv.a, a.envelope.attack, 0.6));
-  if (a.vibrato && p.lfo.depth < 0.05) p.lfo = { target: 'pitch', rate: a.vibrato.rate, depth: round(a.vibrato.depth / 50, 2), delay: 0.4 };
+  // 한 번 친 화음(음 시작이 거의 없음)이면 재 본 엔벨로프를 그대로 옮긴다 (줄 뜯기는 줄 모델이 엔벨로프를 만든다)
+  if (a.kind === 'chord' && a.onsetRate <= 1.2 && p.source !== 'pluck') {
+    const e = a.envelope;
+    p.ampEnv = { a: round(e.attack), d: round(Math.max(0.05, e.decay)), s: round(e.sustain, 2), r: round(Math.max(e.release, 0.05)) };
+  } else if (a.kind === 'chord' && a.envelope.attack > 0.15) p.ampEnv.a = round(mix(p.ampEnv.a, a.envelope.attack, 0.6));
+  if (a.vibrato && p.lfo.depth < 0.05) p.lfo = { ...p.lfo, target: 'pitch', rate: a.vibrato.rate, depth: round(a.vibrato.depth / 50, 2), delay: 0.4 };
+  // 바람·숨이 많은 소리면 노이즈를 더한다 (Coastal Shine 같은 반짝이는 패드)
+  if (p.source === 'synth' && a.noiseLevel > 0.15) p.noise = round(Math.max(p.noise, clamp(a.noiseLevel * 0.5, 0, 0.6)), 2);
   p.eq = { ...p.eq, match: p.eq.match.map(() => 0) };
   p.name = name.slice(0, 40);
   return normalizePatch(p);
@@ -1022,7 +1069,8 @@ function adaptToMix(from, a, name) {
 
 /** 분석 결과에 맞는 출발 음색. kind 에 따라 다시 합성하거나 가장 닮은 기본 음색을 고른다. */
 export function planPatch(a, presets, opts = {}) {
-  if (a.kind === 'tone' && a.harmonics && a.pitch) return { mode: 'resynth', ...patchFromTone(a, opts) };
+  // MIDI 로 여러 음이 함께 울린 걸 알면, 한 파형에 화음을 구워 넣지 않도록 화음 방식으로
+  if (a.kind === 'tone' && a.harmonics && a.pitch && !opts.chord) return { mode: 'resynth', ...patchFromTone(a, opts) };
   return { mode: 'nearest', ...patchFromMix(a, presets, opts) };
 }
 

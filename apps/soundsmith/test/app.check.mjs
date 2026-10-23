@@ -1,12 +1,24 @@
 // 브라우저에서 화면 전체를 눌러 보는 확인: 다섯 화면을 열고, 건반을 치고, 랜덤·변주·되돌리기·섞기·배음 그리기,
 // 들어 보기(시험 연주·이펙트 A/B·잔향 꼬리 재기·잔향 종류), 샘플에 이펙트 굽기,
-// 음원 따라 만들기(예시 소리 → 닮은 음색·더 비슷하게·톤 입히기·샘플·늘리기), 데모 샘플 루프와 가공,
+// 음원 따라 만들기(예시 소리 → 닮은 음색·더 비슷하게·MIDI 함께 불러오기·톤 입히기·샘플·늘리기), 데모 샘플 루프와 가공,
 // 루퍼 재생·녹음, 튜닝 변경을 해 본다. 콘솔 오류가 하나라도 나면 실패.
 // 실행: npm start 로 서버를 띄운 뒤 node test/app.check.mjs  (SHOTS=폴더 를 주면 화면을 저장)
 import { chromium, launchOptions } from './browser.mjs';
 
 const url = process.env.APP_URL || 'http://127.0.0.1:8010/';
 const shots = process.env.SHOTS;
+// 예시 첼로(A2, 3초)와 함께 쓸 MIDI: 120 BPM, 'Cello' 트랙에 A2 한 음 (0.05~2.6초)
+function celloMidi() {
+  const vlq = (n) => {
+    const out = [n & 0x7f];
+    while ((n >>= 7)) out.unshift((n & 0x7f) | 0x80);
+    return out;
+  };
+  const name = [...Buffer.from('Cello')];
+  const ev = [0, 0xff, 0x51, 3, 0x07, 0xa1, 0x20, 0, 0xff, 0x03, name.length, ...name, ...vlq(48), 0x90, 45, 100, ...vlq(2448), 0x80, 45, 0, 0, 0xff, 0x2f, 0];
+  const u32 = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  return Buffer.from([...Buffer.from('MThd'), ...u32(6), 0, 0, 0, 1, 0x01, 0xe0, ...Buffer.from('MTrk'), ...u32(ev.length), ...ev]);
+}
 const browser = await chromium.launch(launchOptions);
 const errors = [];
 const results = {};
@@ -147,6 +159,18 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   await page.click('text=더 비슷하게');
   await page.waitForFunction(() => !window.soundsmith.match.state.busy, null, { timeout: 60000 });
   r.refined = await page.evaluate(() => window.soundsmith.match.state.result.score);
+  // MIDI 함께 불러오기: 첼로 A2 한 음짜리 MIDI → 트랙 고르기·구간 추천·같은 음으로 견주기 → 빼기
+  await page.setInputFiles('input[accept^=".mid"]', { name: 'cello.mid', mimeType: 'audio/midi', buffer: celloMidi() });
+  await page.waitForFunction(() => window.soundsmith.match.state.events?.length && !window.soundsmith.match.state.busy, null, { timeout: 30000 });
+  r.midi = await page.evaluate(() => {
+    const st = window.soundsmith.match.state;
+    return { track: st.track, events: st.events.map((e) => e.midi), chips: st.suggestions.map((s) => s.label), state: document.querySelector('.midi-state').dataset.state };
+  });
+  await page.click('text=① 닮은 음색 만들기');
+  await page.waitForFunction(() => window.soundsmith.match.state.result && !window.soundsmith.match.state.busy, null, { timeout: 30000 });
+  r.midiMade = await page.evaluate(() => ({ score: window.soundsmith.match.state.result.score, events: window.soundsmith.match.state.result.plan.events?.length }));
+  await page.click('text=MIDI 빼기');
+  await page.waitForFunction(() => !window.soundsmith.match.state.busy && !window.soundsmith.match.state.events.length, null, { timeout: 30000 });
   r.matchOverflow = await overflow();
   if (shots) await page.screenshot({ path: `${shots}/${viewport.name}-match.png`, fullPage: viewport.name === 'desktop' });
   // 예시 화음 → 톤만 입히기 → 샘플로 → 늘리기
@@ -193,6 +217,7 @@ for (const [name, r] of Object.entries(results)) {
   if (!r.reversed.endsWith('거꾸로') || r.restored.endsWith('거꾸로')) bad.push('샘플 가공');
   if (r.matchKind !== '한 음' || r.made.wave !== 'custom' || r.made.score < 60) bad.push(`닮은 음색 ${JSON.stringify(r.made)}`);
   if (r.refined < r.made.score) bad.push('더 비슷하게');
+  if (r.midi.events.join() !== '45' || r.midi.chips[0] !== 'A2' || r.midi.state !== 'on' || r.midiMade.events !== 1 || r.midiMade.score < 60) bad.push(`MIDI 함께 ${JSON.stringify([r.midi, r.midiMade])}`);
   if (r.chordKind === 'tone' || !r.toned.eq) bad.push('톤만 입히기');
   if (r.regionSample.source !== 'sample' || r.stretched.seconds < 10 || r.stretched.loop !== 'forward' || r.padVoice < 1) bad.push('샘플·늘리기');
   for (const k of ['synthOverflow', 'samplerOverflow', 'looperOverflow', 'tuningOverflow', 'matchOverflow']) if (r[k] > 0) bad.push(`${k}=${r[k]}`);
