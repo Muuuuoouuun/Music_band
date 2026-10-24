@@ -1,5 +1,5 @@
-// 음색 만들기 화면: 프리셋 서랍, 도우미 슬라이더·섞기, 모듈(오실레이터·배음 그리기·FM·줄·필터·엔벨로프·LFO·
-// 어택·질감·공간·EQ).
+// 음색 만들기 화면: 프리셋 서랍, 도우미 슬라이더·섞기, 고민별 다듬기, 모듈(오실레이터·배음 그리기·FM·줄·필터·엔벨로프·LFO·
+// 어택·질감·공간·EQ). '간단히' 보기는 꼭 필요한 패널만, '모두'는 전부.
 import {
   CATEGORIES, MACROS, RANDOM_KINDS, SOURCES, CUSTOM_LEN, MATCH_BANDS, applyMacro, normalizePatch, randomPatch, mutatePatch,
   blendPatches, harmonicsOf, setPath, waveCycle, REVERB_TYPES, DELAY_MODES,
@@ -10,6 +10,8 @@ import { drawEnvelope, drawFilter, drawEq, drawTail } from './draw.js';
 import { renderTail } from './engine.js';
 import { tailStats } from './analyze.js';
 import { saveFile, copyText } from './store.js';
+import { FIXES, applyFix } from './tweaks.js';
+import { StartCard } from './guide.js';
 
 const BAND_LABELS = MATCH_BANDS.map((f) => (f >= 1000 ? `${f / 1000}k` : String(f)));
 const usesCustom = (p) => p.osc.some((o, i) => o.wave === 'custom' && (i === 0 || o.level > 0.001));
@@ -23,10 +25,16 @@ export function SynthView(root, app) {
 
   // ---- 프리셋 서랍 ----
   const library = h('aside', { class: 'library', 'aria-label': '음색 목록' });
+  // 좁은 화면에서는 분류 하나씩만 (64개를 다 늘어놓으면 편집 화면이 한참 아래로 밀림)
+  let libCat = null;
   function renderLibrary() {
     const groups = [];
+    const cats = [];
+    const current = app.userPresets.some((u) => u.id === app.presetId) ? 'mine' : app.patch.category;
+    if (!libCat) libCat = current;
     if (app.userPresets.length) {
-      groups.push(h('div', { class: 'lib-group' }, h('h4', {}, '내 음색'),
+      cats.push(['mine', '내 음색']);
+      groups.push(h('div', { class: 'lib-group', dataset: { cat: 'mine' } }, h('h4', {}, '내 음색'),
         h('ul', {}, ...app.userPresets.map((u) => h('li', {},
           h('button', { type: 'button', class: 'lib-item', 'aria-current': String(app.presetId === u.id), onclick: () => app.loadPreset(u) }, u.patch.name),
           h('button', { type: 'button', class: 'lib-del', 'aria-label': `${u.patch.name} 지우기`, onclick: () => app.deletePreset(u.id) }, '×'))))));
@@ -34,11 +42,19 @@ export function SynthView(root, app) {
     for (const c of CATEGORIES) {
       const items = FACTORY.filter((f) => f.patch.category === c.id);
       if (!items.length) continue;
-      groups.push(h('div', { class: 'lib-group' }, h('h4', {}, c.label),
+      cats.push([c.id, c.label]);
+      groups.push(h('div', { class: 'lib-group', dataset: { cat: c.id } }, h('h4', {}, c.label),
         h('ul', {}, ...items.map((f) => h('li', {},
           h('button', { type: 'button', class: 'lib-item', 'aria-current': String(app.presetId === f.id), onclick: () => app.loadPreset(f) }, f.patch.name))))));
     }
-    library.replaceChildren(h('h3', { class: 'lib-title' }, `음색 서랍 · ${FACTORY.length + app.userPresets.length}`), ...groups);
+    if (!cats.some(([id]) => id === libCat)) libCat = cats[0][0];
+    for (const g of groups) g.classList.toggle('is-active', g.dataset.cat === libCat);
+    const catBtns = cats.map(([id, label]) => h('button', {
+      type: 'button', class: 'chip-btn lib-cat', 'aria-pressed': String(id === libCat),
+      onclick: () => { libCat = id; renderLibrary(); },
+    }, label));
+    library.replaceChildren(h('h3', { class: 'lib-title' }, `음색 서랍 · ${FACTORY.length + app.userPresets.length}`),
+      h('nav', { class: 'lib-cats', 'aria-label': '음색 분류' }, ...catBtns), ...groups);
     renderMorphTargets();
   }
 
@@ -312,16 +328,87 @@ export function SynthView(root, app) {
     },
     eqCanvas, ctl.add('eq.low'), ctl.add('eq.mid'), ctl.add('eq.midFreq'), ctl.add('eq.high'), ctl.custom(matchEditor)),
     panel('연주', {}, ctl.add('mono'), ctl.add('glide'), ctl.add('volume')));
+  // 패널 이름표: 고민별 다듬기·바로 가기가 찾아가고, '간단히' 보기는 simple 만 보여 준다
+  const PANEL_KEYS = ['bench', 'source', 'osc0', 'osc1', 'harm', 'fm', 'pluck', 'filter', 'filterEnv', 'ampEnv', 'lfo', 'attack', 'texture', 'delay', 'reverb', 'eq', 'play'];
+  const SIMPLE = new Set(['bench', 'filter', 'ampEnv', 'reverb', 'play']);
+  const panels = {};
+  [...modules.children].forEach((el, i) => {
+    const key = PANEL_KEYS[i];
+    panels[key] = el;
+    el.dataset.panel = key;
+    el.dataset.level = SIMPLE.has(key) ? 'simple' : 'advanced';
+  });
+
+  // ---- 보기: 간단히 / 모두, 바로 가기 ----
+  const JUMPS = [['source', '소리 재료'], ['filter', '필터'], ['ampEnv', '엔벨로프'], ['lfo', 'LFO'], ['attack', '첫소리'], ['delay', '딜레이'], ['reverb', '잔향'], ['eq', 'EQ']];
+  const modeBtns = [['simple', '간단히'], ['all', '모두']].map(([id, label]) => h('button', {
+    type: 'button', class: 'seg-btn', 'aria-pressed': 'false', dataset: { mode: id },
+    onclick: () => app.setUi({ synthMode: id }),
+  }, label));
+  const jumpBtns = JUMPS.map(([key, label]) => h('button', { type: 'button', class: 'chip-btn jump', dataset: { panel: key }, onclick: () => reveal(key) }, label));
+  const viewHint = h('span', { class: 'view-hint' });
+  const viewBar = h('div', { class: 'view-bar' },
+    h('div', { class: 'seg', role: 'group', 'aria-label': '패널 보기' }, ...modeBtns),
+    viewHint,
+    h('nav', { class: 'jumps', 'aria-label': '패널 바로 가기' }, ...jumpBtns));
+  const mode = () => (app.ui.synthMode === 'all' ? 'all' : 'simple');
+  function syncMode() {
+    const m = mode();
+    modules.dataset.mode = m;
+    modeBtns.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === m)));
+    viewHint.textContent = m === 'simple' ? '꼭 필요한 패널만 (밝기·엔벨로프·공간·볼륨)' : '오실레이터·LFO·이펙트·EQ 까지 모두';
+    jumpBtns.forEach((b) => { b.hidden = m === 'simple' && !SIMPLE.has(b.dataset.panel); });
+    requestAnimationFrame(() => {
+      redraw();
+      harmEditor.sync();
+      matchEditor.sync();
+      drawTail(tailCanvas, lastTail);
+    });
+  }
+  /** 패널로 가서 잠깐 빛나게. '간단히'에서 숨은 패널이면 '모두'로 바꾼다 */
+  function reveal(key) {
+    let el = panels[key];
+    if (key === 'osc0' && app.patch.source !== 'synth') el = panels.texture;
+    if (!el) return;
+    if (el.dataset.level === 'advanced' && mode() === 'simple') app.setUi({ synthMode: 'all' });
+    el.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    el.classList.remove('flash');
+    void el.offsetWidth;
+    el.classList.add('flash');
+  }
+
+  // ---- 고민별 다듬기 ----
+  const fixResult = h('div', { class: 'fix-result', 'aria-live': 'polite' });
+  const fixBtns = FIXES.map((f) => h('button', { type: 'button', class: 'fix-btn', title: f.label, onclick: () => runFix(f.id) },
+    h('span', { class: 'fix-problem' }, f.problem), h('span', { class: 'fix-label' }, `→ ${f.label}`)));
+  function runFix(id) {
+    const r = applyFix(app.patch, id);
+    if (!r.changes.length) {
+      fixResult.replaceChildren(h('p', {}, `‘${r.fix.label}’ 쪽으로는 이미 끝까지 갔어요. 다른 고민을 눌러 보거나 ‘모두’ 보기에서 직접 바꿔 보세요.`));
+      return;
+    }
+    app.setPatch(r.patch, { phase: 'change', keepMacros: true, presetId: null });
+    if (!app.phrase) app.playPhrase(app.patch.category === 'pad' || app.patch.category === 'texture' ? 'chord' : 'note');
+    fixResult.replaceChildren(
+      h('p', {}, h('strong', {}, `${r.fix.label}: `), r.changes.map((c) => c.text).join(' · ')),
+      h('div', { class: 'btn-row' },
+        h('button', { type: 'button', class: 'small', onclick: () => reveal(r.panel) }, '바꾼 패널 보기'),
+        h('button', { type: 'button', class: 'small quiet', onclick: () => { app.undo(); fixResult.replaceChildren(h('p', {}, '되돌렸어요.')); } }, '되돌리기')));
+  }
+  const fixes = h('section', { class: 'fixes', 'aria-label': '고민별 다듬기' },
+    h('div', { class: 'macros-head' }, h('h3', {}, '고민별 다듬기'), h('p', {}, '들리는 고민을 누르면 알맞은 값을 조금 바꾸고 무엇을 바꿨는지 알려 줘요. 여러 번 누르면 더.')),
+    h('div', { class: 'fix-row' }, ...fixBtns),
+    fixResult);
 
   root.append(h('div', { class: 'synth-layout' }, library,
-    h('div', { class: 'editor' }, bar, h('section', { class: 'macros', 'aria-label': '도우미 슬라이더' },
+    h('div', { class: 'editor' }, StartCard(app), bar, h('section', { class: 'macros', 'aria-label': '도우미 슬라이더' },
       h('div', { class: 'macros-head' }, h('h3', {}, '도우미'), h('p', {}, '가운데가 지금 소리. 좌우로 밀면 여러 값이 함께 움직여요.')),
       h('div', { class: 'macro-row' }, ...macroEls),
       h('div', { class: 'morph' },
         h('label', { for: morphId, class: 'morph-label' }, '섞기'),
         morphSelect,
         h('div', { class: 'morph-slide' }, morphRange, morphOut),
-        h('p', { class: 'morph-hint' }, '지금 음색에서 고른 음색 쪽으로 서서히. 두 음색 사이에서 새 음색을 꺼내요.'))), modules)));
+        h('p', { class: 'morph-hint' }, '지금 음색에서 고른 음색 쪽으로 서서히. 두 음색 사이에서 새 음색을 꺼내요.'))), fixes, viewBar, modules)));
 
   function redraw() {
     const p = app.patch;
@@ -370,8 +457,10 @@ export function SynthView(root, app) {
     scheduleTail();
   }));
   app.on('tempo', scheduleTail);
+  app.on('ui', syncMode);
   app.tail = () => lastTail; // 브라우저 검사용
   sync();
   syncBench();
-  return { sync };
+  syncMode();
+  return { sync, reveal };
 }

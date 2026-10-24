@@ -75,6 +75,32 @@ export function makeTuner(input) {
   return { tuning: t, offsets: off, centsAt, freq };
 }
 
+/**
+ * 들린 소리(hz)가 지금 튜닝의 가장 가까운 음에서 몇 cent 벗어났나 (음률·미세 조정·옥타브 늘이기 포함, 조옮김은 소리 높이라 무관).
+ * 반환: { note, target(Hz), cents }
+ */
+export function pitchOffset(input, hz) {
+  if (!(hz > 0)) return null;
+  const t = normalizeTuning(input);
+  const off = offsets(t);
+  const note = Math.round(69 + 12 * Math.log2(hz / t.a4));
+  const target = t.a4 * 2 ** ((note - 69) / 12 + (off[mod12(note)] + t.fine + (t.stretch * (note - 69)) / 12) / 1200);
+  return { note, target, cents: 1200 * Math.log2(hz / target) };
+}
+
+/**
+ * 다른 악기(교회 피아노·오르간 등)에 맞추기: 그 악기 소리 hz 가 지금 튜닝에서 딱 맞게 들리는 기준음.
+ * 화면 범위(415~466 Hz) 밖이면 clamped. 반환: { a4, cents, note, clamped }
+ */
+export function matchA4(input, hz) {
+  const t = normalizeTuning(input);
+  const o = pitchOffset(t, hz);
+  if (!o) return null;
+  const want = Math.round(t.a4 * 2 ** (o.cents / 1200) * 10) / 10;
+  const a4 = Math.min(466, Math.max(415, want));
+  return { a4, cents: o.cents, note: o.note, clamped: a4 !== want };
+}
+
 /** 주파수 -> 가장 가까운 음과 그 음에서 벗어난 cent (기준음 a4, 평균율 기준; 튜너 화면용). */
 export function nearestNote(hz, a4 = 440) {
   if (!(hz > 0)) return null;

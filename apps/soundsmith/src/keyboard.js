@@ -1,4 +1,4 @@
-// 건반: 화면 건반(여러 손가락 터치, 미끄러지듯 치기), 컴퓨터 키보드, Web MIDI 건반.
+// 건반: 화면 건반(여러 손가락 터치, 미끄러지듯 치기, 접기), 컴퓨터 키보드, Web MIDI 건반(프로그램 체인지 = 세트리스트 곡).
 // 화면 건반은 위쪽을 누르면 여리게, 아래쪽을 누르면 세게 친다.
 import { h } from './ui.js';
 import { noteName } from './tuning.js';
@@ -10,7 +10,10 @@ const isTyping = (el) => el && (el.isContentEditable || ['TEXTAREA', 'SELECT'].i
   || (el.tagName === 'INPUT' && !['range', 'button', 'checkbox', 'radio'].includes(el.type)));
 
 export class Keyboard {
-  /** handlers: { noteOn(midi, velocity), noteOff(midi), sustain(on), describe(midi) -> 글 } */
+  /**
+   * handlers: { noteOn(midi, velocity), noteOff(midi), sustain(on), describe(midi) -> 글, program(n),
+   *   folded: 처음에 접어 둘지, onFold(on) }
+   */
   constructor(root, handlers) {
     this.root = root;
     this.handlers = handlers;
@@ -32,6 +35,10 @@ export class Keyboard {
     this.holdBtn = h('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false', title: '서스테인 페달처럼 손을 떼도 소리가 이어짐' }, '홀드');
     this.holdBtn.addEventListener('click', () => this.setHold(!this.hold));
     this.midiStatus = h('span', { class: 'midi-status', 'data-state': 'off' }, 'MIDI 없음');
+    // 건반 접기: 휴대폰에서 화면을 넓게 쓰거나 MIDI 건반만 쓸 때. 접어도 컴퓨터 키보드·MIDI 는 그대로
+    this.foldWord = h('span', {});
+    this.foldBtn = h('button', { type: 'button', class: 'quiet small fold-btn', 'aria-expanded': 'true' }, h('span', { class: 'fold-what' }, '건반 '), this.foldWord);
+    this.foldBtn.addEventListener('click', () => this.setFolded(!this.folded, true));
     const vel = h('input', { type: 'range', min: 10, max: 100, value: 75, id: 'velocity', 'aria-label': '기본 세기' });
     vel.addEventListener('input', () => { this.velocity = Number(vel.value) / 100; });
     this.keysEl = h('div', { class: 'keys', role: 'group', 'aria-label': '화면 건반' });
@@ -44,8 +51,20 @@ export class Keyboard {
         h('label', { class: 'vel' }, h('span', { class: 'label' }, '세기'), vel),
         this.holdBtn,
         this.readout,
-        this.midiStatus),
+        this.midiStatus,
+        this.foldBtn),
       this.keysEl);
+    this.setFolded(Boolean(this.handlers.folded));
+  }
+
+  setFolded(on, user = false) {
+    this.folded = on;
+    this.root.dataset.folded = String(on);
+    this.foldBtn.setAttribute('aria-expanded', String(!on));
+    this.foldWord.textContent = on ? '펴기' : '접기';
+    this.foldBtn.setAttribute('aria-label', on ? '건반 펴기' : '건반 접기');
+    if (user) this.handlers.onFold?.(on);
+    if (!on) requestAnimationFrame(() => this.layout());
   }
 
   shift(semis) {
@@ -196,5 +215,6 @@ export class Keyboard {
     if (type === 0x90 && d2 > 0) this.press(`m${d1}`, d1, d2 / 127);
     else if (type === 0x80 || (type === 0x90 && d2 === 0)) this.release(`m${d1}`);
     else if (type === 0xb0 && d1 === 64) this.setHold(d2 >= 64);
+    else if (type === 0xc0) this.handlers.program?.(d1);
   }
 }

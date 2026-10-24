@@ -79,3 +79,23 @@ test('음이름과 가장 가까운 음', () => {
   assert.equal(n.name, 'A4');
   near(n.cents, 1200 * Math.log2(446 / 440), 1e-9);
 });
+
+test('다른 악기에 맞추기: 들린 소리가 지금 튜닝에서 맞게 들리는 기준음', async () => {
+  const { matchA4, pitchOffset } = await import('../src/tuning.js');
+  // 441.5 Hz 로 조율된 피아노의 A4 → 기준음 441.5
+  assert.equal(matchA4({ a4: 440 }, 441.5).a4, 441.5);
+  // 같은 피아노의 E5 (441.5 기준 평균율)
+  assert.equal(matchA4({ a4: 440 }, 441.5 * 2 ** (7 / 12)).a4, 441.5);
+  // 순정률(C 기준)의 E5 는 평균율과 다른 높이가 맞는 높이: 그 높이로 들리면 기준음은 그대로
+  const just = { a4: 440, temperament: 'just', root: 0 };
+  const e5hz = makeTuner(just).freq(76);
+  assert.ok(Math.abs(1200 * Math.log2(e5hz / 659.255)) > 1);
+  const e5 = pitchOffset(just, e5hz);
+  assert.equal(e5.note, 76);
+  assert.ok(Math.abs(e5.cents) < 0.01, `${e5.cents}`);
+  assert.equal(matchA4(just, e5hz).a4, 440);
+  // 화면 범위(415~466) 밖으로 가면 끝에서 멈춤
+  const low = matchA4({ a4: 416 }, 416 * 2 ** (-40 / 1200));
+  assert.ok(low.clamped && low.a4 === 415, JSON.stringify(low));
+  assert.equal(matchA4({ a4: 440 }, 0), null);
+});

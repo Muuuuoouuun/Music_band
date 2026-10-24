@@ -33,6 +33,7 @@
           <input type="range" id="master" min="0" max="100" value="85" aria-label="마스터 볼륨">
         </label>
         <button type="button" class="quiet" id="panic" title="울리고 있는 소리를 모두 멈춤">모두 멈춤</button>
+        <button type="button" class="quiet help-btn" id="help" aria-haspopup="dialog" title="사용법 (? 키)">사용법</button>
       </div>
     </header>
 
@@ -40,6 +41,7 @@
 
     <nav class="tabs" aria-label="화면">
       <button type="button" class="tab" data-tab="synth" aria-controls="view-synth">음색 만들기</button>
+      <button type="button" class="tab" data-tab="live" aria-controls="view-live">연주 · 세트리스트</button>
       <button type="button" class="tab" data-tab="match" aria-controls="view-match">음원 따라 만들기</button>
       <button type="button" class="tab" data-tab="sampler" aria-controls="view-sampler">샘플러 · 루프 지점</button>
       <button type="button" class="tab" data-tab="looper" aria-controls="view-looper">루퍼</button>
@@ -48,6 +50,7 @@
 
     <main>
       <section class="view" id="view-synth" data-view="synth" aria-label="음색 만들기"></section>
+      <section class="view" id="view-live" data-view="live" aria-label="연주 · 세트리스트" hidden></section>
       <section class="view" id="view-match" data-view="match" aria-label="음원 따라 만들기" hidden></section>
       <section class="view" id="view-sampler" data-view="sampler" aria-label="샘플러" hidden></section>
       <section class="view" id="view-looper" data-view="looper" aria-label="루퍼" hidden></section>
@@ -56,6 +59,8 @@
   </div>
 
   <footer class="dock" id="dock" aria-label="건반"></footer>
+
+  <dialog class="guide" id="guide" aria-labelledby="guide-title"></dialog>
 
   <script type="module" src="src/app.js"></script>
 </body>

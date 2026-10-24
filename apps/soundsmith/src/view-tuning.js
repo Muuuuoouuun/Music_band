@@ -1,8 +1,8 @@
-// 튜닝 화면: 기준음(A4), 조옮김·미세 조정, 음률과 기준 조, 음마다 cent, 옥타브 늘이기,
-// 평균율과 번갈아 듣기, 마이크 튜너, Scala 주고받기.
+// 튜닝 화면: 맞추는 순서 안내, 기준음(A4), 조옮김·미세 조정, 음률과 기준 조, 음마다 cent, 옥타브 늘이기,
+// 평균율과 번갈아 듣기, 마이크 튜너(다른 악기에 기준음 맞추기), Scala 주고받기.
 import { h, panel, nextId, chipButton } from './ui.js';
 import { drawTuningBars, drawNeedle } from './draw.js';
-import { A4_PRESETS, NOTE_NAMES, TEMPERAMENTS, makeTuner, noteName, offsets, parseScala, degreesToCustom, exportScala } from './tuning.js';
+import { A4_PRESETS, NOTE_NAMES, TEMPERAMENTS, makeTuner, noteName, offsets, parseScala, degreesToCustom, exportScala, pitchOffset, matchA4 } from './tuning.js';
 import { detectPitch } from './sample.js';
 import { Instrument } from './engine.js';
 import { FACTORY } from './presets.js';
@@ -102,8 +102,19 @@ export function TuningView(root, app) {
   const tunerBtn = h('button', { type: 'button' }, '마이크 튜너 켜기');
   const needle = h('canvas', { class: 'needle', 'aria-hidden': 'true' });
   const tunerNote = h('strong', { class: 'tuner-note' }, '—');
-  const tunerDetail = h('p', { class: 'tuner-detail' }, '밴드 악기를 이 기준음과 음률에 맞출 때 써요.');
-  const tuner = { stream: null, analyser: null, buf: null, last: 0, cents: null };
+  const tunerDetail = h('p', { class: 'tuner-detail' }, '밴드 악기를 이 기준음에 맞추거나, 함께 칠 악기에 기준음을 맞출 때 써요.');
+  const tuner = { stream: null, analyser: null, buf: null, last: 0, cents: null, hz: null, steady: 0 };
+  // 다른 악기에 맞추기: 피아노·오르간이 낸 음을 들려주면 그 높이가 딱 맞게 들리는 기준음으로
+  const matchBtn = h('button', { type: 'button', class: 'primary', disabled: true }, '이 소리에 기준음 맞추기');
+  matchBtn.addEventListener('click', () => {
+    const r = tuner.hz ? matchA4(app.tuning, tuner.hz) : null;
+    if (!r) return;
+    const before = app.tuning.a4;
+    set({ a4: r.a4 });
+    app.notice(r.clamped
+      ? `들린 ${noteName(r.note)} 이 너무 멀어 기준음을 범위 끝(${r.a4} Hz)까지만 옮겼어요. 그 악기가 크게 어긋나 있을 수 있어요.`
+      : `들린 ${noteName(r.note)} 에 맞춰 기준음을 ${before} → ${r.a4} Hz 로 바꿨어요. 모든 소리가 그 악기와 같은 높이로 나요.`, r.clamped ? 'bad' : 'good');
+  });
   tunerBtn.addEventListener('click', async () => {
     if (tuner.stream) return stopTuner();
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -129,6 +140,9 @@ export function TuningView(root, app) {
     tuner.stream = null;
     tuner.analyser = null;
     tuner.cents = null;
+    tuner.hz = null;
+    tuner.steady = 0;
+    matchBtn.disabled = true;
     tunerBtn.textContent = '마이크 튜너 켜기';
     tunerNote.textContent = '—';
     drawNeedle(needle, null);
@@ -139,13 +153,18 @@ export function TuningView(root, app) {
     tuner.analyser.getFloatTimeDomainData(tuner.buf);
     const sr = app.studio.ctx.sampleRate;
     const p = detectPitch(tuner.buf, sr, { minHz: 50, maxHz: 1500 });
-    if (!p || p.clarity < 0.75) return;
-    const t = app.tuning;
-    const off = offsets(t);
-    const m = Math.round(69 + 12 * Math.log2(p.hz / t.a4));
-    const target = t.a4 * 2 ** ((m - 69) / 12 + (off[((m % 12) + 12) % 12] + t.fine + (t.stretch * (m - 69)) / 12) / 1200);
-    const cents = 1200 * Math.log2(p.hz / target);
-    tuner.cents = tuner.cents == null ? cents : tuner.cents * 0.6 + cents * 0.4;
+    if (!p || p.clarity < 0.75) {
+      tuner.steady = 0;
+      matchBtn.disabled = true;
+      return;
+    }
+    const { note: m, target, cents } = pitchOffset(app.tuning, p.hz);
+    const jump = tuner.cents == null || Math.abs(cents - tuner.cents) > 8;
+    tuner.cents = jump ? cents : tuner.cents * 0.6 + cents * 0.4;
+    tuner.hz = target * 2 ** (tuner.cents / 1200);
+    // 같은 높이가 0.4초(5번) 넘게 이어져야 맞추기를 허락 (치는 순간·끝나는 꼬리는 높이가 흔들림)
+    tuner.steady = jump ? 0 : tuner.steady + 1;
+    matchBtn.disabled = tuner.steady < 5;
     tunerNote.textContent = noteName(m);
     tunerDetail.textContent = `${p.hz.toFixed(1)} Hz · 목표 ${target.toFixed(1)} Hz · ${tuner.cents >= 0 ? '+' : ''}${tuner.cents.toFixed(0)} cent`;
     drawNeedle(needle, tuner.cents);
@@ -172,7 +191,14 @@ export function TuningView(root, app) {
     }
   });
 
+  const order = h('section', { class: 'tune-order span-3', 'aria-label': '튜닝 순서' },
+    h('h3', {}, '맞추는 순서'),
+    h('ol', {},
+      h('li', {}, h('strong', {}, '기준음'), h('span', {}, '함께 칠 악기가 있으면 마이크 튜너로 그 악기의 A 를 듣고 ‘이 소리에 기준음 맞추기’. 없으면 440 (오케스트라와는 442).')),
+      h('li', {}, h('strong', {}, '조옮김'), h('span', {}, '노래 키에 맞춰 ± 반음. 손은 익숙한 자리로 치고 소리만 옮겨요. 세트리스트에 곡마다 저장돼요.')),
+      h('li', {}, h('strong', {}, '음률'), h('span', {}, '보통은 12평균율 그대로. 한 조에 머무는 패드·오르간 곡이면 순정률 + 기준 조 = 곡의 조를 번갈아 들어 보고 고르세요.'))));
   root.append(h('div', { class: 'tuning-layout' },
+    order,
     panel('기준음', { hint: '모든 소리(신스·줄·샘플·루퍼)가 이 값을 따라요.' },
       h('div', { class: 'a4' }, h('label', { for: a4Id, class: 'label' }, 'A4'), a4Out), a4,
       h('div', { class: 'chip-row' }, ...a4Chips),
@@ -190,7 +216,8 @@ export function TuningView(root, app) {
     panel('음마다 cent', { cls: 'span-2', hint: '평균율에서 몇 cent 벗어나는지. 막대를 끌거나 숫자를 바꾸면 \'직접 조정\'이 돼요.' },
       chart, h('div', { class: 'cent-row' }, ...cells),
       h('div', { class: 'table-wrap' }, table)),
-    panel('마이크 튜너', {}, needle, h('div', { class: 'tuner-read' }, tunerNote, tunerDetail), h('div', { class: 'btn-row' }, tunerBtn)),
+    panel('마이크 튜너', { hint: '함께 칠 피아노·오르간의 음을 길게 들려주고 ‘이 소리에 기준음 맞추기’. 기타·현악기는 바늘을 보며 이 기준음에 맞춰요.' },
+      needle, h('div', { class: 'tuner-read' }, tunerNote, tunerDetail), h('div', { class: 'btn-row' }, tunerBtn, matchBtn)),
     panel('Scala 파일', { hint: '마이크로톤 음계 표준(.scl). 12음 + 옥타브 음계를 건반에 맞춰요.' },
       sclText,
       h('div', { class: 'btn-row' },

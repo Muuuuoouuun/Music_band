@@ -211,12 +211,15 @@ export function LooperView(root, app) {
   playBtn.addEventListener('click', () => (t.playing ? stop() : play()));
   recBtn.addEventListener('click', () => (rec.active ? stopRecording() : startRecording()));
   metroBtn.addEventListener('click', () => { metronome = !metronome; render(); });
-  bpm.addEventListener('change', () => {
-    const v = Math.min(200, Math.max(40, Math.round(Number(bpm.value) || clock.bpm)));
+  // 빠르기를 바꿔도 지금 박 위치는 그대로 (세트리스트가 곡을 넘길 때도 이 길로)
+  function retempo(v) {
     const before = t.playing ? beatNow() : 0;
     clock = loopClock({ bpm: v, meter: clock.meter, bars: clock.bars });
     if (t.playing) t.t0 = app.studio.ctx.currentTime - before * clock.beatSec;
-    app.setTempo(v);
+  }
+  bpm.addEventListener('change', () => {
+    retempo(Math.min(200, Math.max(40, Math.round(Number(bpm.value) || clock.bpm))));
+    app.setTempo(clock.bpm);
     render();
   });
   const reshape = () => {
@@ -269,7 +272,13 @@ export function LooperView(root, app) {
   app.on('resize', frame);
   app.on('audio', ensureInstruments);
   app.on('panic', stop);
-  app.on('tempo', () => L.tracks.forEach((tr) => tr.inst?.syncTempo()));
+  app.on('tempo', () => {
+    if (app.studio.bpm !== clock.bpm) {
+      retempo(app.studio.bpm);
+      render();
+    }
+    L.tracks.forEach((tr) => tr.inst?.syncTempo());
+  });
   render();
   return { stop, state: L };
 }

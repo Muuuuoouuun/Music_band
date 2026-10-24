@@ -1,7 +1,9 @@
-// 브라우저에서 화면 전체를 눌러 보는 확인: 다섯 화면을 열고, 건반을 치고, 랜덤·변주·되돌리기·섞기·배음 그리기,
+// 브라우저에서 화면 전체를 눌러 보는 확인: 여섯 화면을 열고, 사용법 창·시작 카드·간단히/모두 보기·고민별 다듬기,
+// 건반을 치고, 랜덤·변주·되돌리기·섞기·배음 그리기,
 // 들어 보기(시험 연주·이펙트 A/B·잔향 꼬리 재기·잔향 종류), 샘플에 이펙트 굽기,
 // 음원 따라 만들기(예시 소리 → 닮은 음색·더 비슷하게·MIDI 함께 불러오기·톤 입히기·샘플·늘리기), 데모 샘플 루프와 가공,
-// 루퍼 재생·녹음, 튜닝 변경을 해 본다. 콘솔 오류가 하나라도 나면 실패.
+// 루퍼 재생·녹음, 튜닝 변경, 연주 화면 세트리스트(화살표·숫자·MIDI 프로그램 체인지로 곡 넘기기)·건반 접기를 해 본다.
+// 콘솔 오류가 하나라도 나면 실패.
 // 실행: npm start 로 서버를 띄운 뒤 node test/app.check.mjs  (SHOTS=폴더 를 주면 화면을 저장)
 import { chromium, launchOptions } from './browser.mjs';
 
@@ -32,6 +34,21 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   const r = (results[viewport.name] = {});
   if (shots) await page.screenshot({ path: `${shots}/${viewport.name}-synth.png`, fullPage: viewport.name === 'desktop' });
   r.synthOverflow = await overflow();
+  // 처음 온 사람: 시작 카드와 '간단히' 보기 (꼭 필요한 패널만)
+  r.start = await page.isVisible('.start-card');
+  const visiblePanels = () => page.evaluate(() => [...document.querySelectorAll('.modules > .panel')].filter((p) => p.offsetParent).length);
+  r.simplePanels = await visiblePanels();
+  // 사용법 창: 단추로 열고 목차를 옮기고 Esc 로 닫기, ? 키로 다시 열기
+  await page.click('#help');
+  await page.click('.guide-tab:text-is("단축키")');
+  r.guide = { open: await page.evaluate(() => document.getElementById('guide').open), keys: (await page.textContent('.guide-body')).includes('PageDown') };
+  await page.keyboard.press('Escape');
+  r.guide.closed = !(await page.evaluate(() => document.getElementById('guide').open));
+  await page.keyboard.press('Shift+Slash');
+  r.guide.byKey = await page.evaluate(() => document.getElementById('guide').open);
+  await page.keyboard.press('Escape');
+  await page.click('.start-card button:text-is("닫기")');
+  r.startClosed = !(await page.isVisible('.start-card')) && (await page.evaluate(() => JSON.parse(localStorage.getItem('soundsmith.ui.v1')).startDismissed));
   await page.click('#power');
   await page.waitForTimeout(200);
   r.running = await page.evaluate(() => window.soundsmith.studio.running);
@@ -57,6 +74,15 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   const cutoff0 = await page.evaluate(() => window.soundsmith.patch.filter.cutoff);
   await page.locator('.macro-range').first().fill('900');
   r.macroBrighter = (await page.evaluate(() => window.soundsmith.patch.filter.cutoff)) > cutoff0;
+  // 고민별 다듬기: '먹먹해요' → 차단 주파수가 오르고 바꾼 값을 말로 보여 주고, 되돌리기로 돌아감
+  const fixCut = await page.evaluate(() => window.soundsmith.patch.filter.cutoff);
+  await page.click('.fix-btn:has-text("먹먹하고 어두워요")');
+  r.fix = { up: (await page.evaluate(() => window.soundsmith.patch.filter.cutoff)) > fixCut, text: await page.textContent('.fix-result') };
+  await page.click('.fix-result button:text-is("되돌리기")');
+  r.fix.back = (await page.evaluate(() => window.soundsmith.patch.filter.cutoff)) === fixCut;
+  // '모두' 보기로: 오실레이터·LFO·이펙트 패널까지
+  await page.click('.view-bar button:text-is("모두")');
+  r.allPanels = await visiblePanels();
   // 섞기: 지금 음색에서 고른 음색 쪽으로
   await page.selectOption('.morph select', { label: '신스 베이스' });
   await page.locator('.morph input[type=range]').fill('50');
@@ -86,6 +112,8 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   await page.waitForFunction((before) => window.soundsmith.tail()?.onset > before + 0.01, r.tailHall, { timeout: 15000 });
   r.tail = await page.evaluate(() => ({ type: window.soundsmith.patch.fx.reverbType, onset: window.soundsmith.tail().onset, text: document.querySelector('.tail-facts').textContent }));
   // 프리셋 고르기
+  // 좁은 화면은 분류 칩으로 고른 분류의 음색만 보여 줌
+  if (await page.isVisible('.lib-cats')) await page.click('.lib-cat:text-is("줄·플럭")');
   await page.locator('.lib-item', { hasText: '어쿠스틱 기타' }).click();
   r.source = await page.evaluate(() => window.soundsmith.patch.source);
   await page.keyboard.down('g');
@@ -190,6 +218,36 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   r.padVoice = await page.evaluate(() => window.soundsmith.live.voiceCount);
   await page.keyboard.up('d');
   r.linkState = await page.textContent('.link-state');
+  // 연주 · 세트리스트: 예시 세 곡 → → 키·숫자·MIDI 프로그램 체인지로 넘기면 음색·조옮김·BPM(루퍼까지)이 함께 바뀜
+  await page.click('.tab[data-tab="live"]');
+  await page.click('text=예시 세트리스트 만들기');
+  await page.locator('.live-title').click(); // 단추가 아닌 곳에 초점
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowRight');
+  const liveNow = () => page.evaluate(() => ({ i: window.soundsmith.setlist.state().current, patch: window.soundsmith.patch.name, tr: window.soundsmith.tuning.transpose, bpm: window.soundsmith.studio.bpm, looperBpm: document.querySelector('.bpm-input').value, title: document.querySelector('.live-title').textContent }));
+  r.liveNext = await liveNow();
+  await page.keyboard.press('3');
+  r.liveDigit = await liveNow();
+  await page.evaluate(() => window.soundsmith.keyboard.midi([0xc0, 0, 0]));
+  r.liveProgram = await liveNow();
+  await page.click('text=지금 음색으로 곡 추가');
+  await page.locator('.live-title').click();
+  r.liveCount = await page.evaluate(() => JSON.parse(localStorage.getItem('soundsmith.setlist.v1')).length);
+  r.liveOverflow = await overflow();
+  if (shots) await page.screenshot({ path: `${shots}/${viewport.name}-live.png`, fullPage: viewport.name === 'desktop' });
+  // 건반 접기: 접어도 컴퓨터 자판은 연주됨
+  await page.click('.fold-btn');
+  r.folded = { hidden: !(await page.isVisible('.keys')) };
+  await page.keyboard.down('a');
+  await page.waitForTimeout(100);
+  r.folded.voices = await page.evaluate(() => window.soundsmith.live.voiceCount);
+  await page.keyboard.up('a');
+  await page.click('.fold-btn');
+  r.folded.back = await page.isVisible('.keys');
+  // 다시 열어도 세트리스트·보기 방식이 남아 있음
+  await page.reload();
+  await page.waitForTimeout(400);
+  r.reload = await page.evaluate(() => ({ songs: window.soundsmith.setlist.state().list.length, mode: document.querySelector('.modules').dataset.mode, start: !document.querySelector('.start-card').hidden }));
   await page.close();
 }
 console.log(JSON.stringify(results, null, 1));
@@ -216,11 +274,20 @@ for (const [name, r] of Object.entries(results)) {
   if (r.drawn.wave !== 'custom') bad.push('배음 그리기');
   if (!r.reversed.endsWith('거꾸로') || r.restored.endsWith('거꾸로')) bad.push('샘플 가공');
   if (r.matchKind !== '한 음' || r.made.wave !== 'custom' || r.made.score < 60) bad.push(`닮은 음색 ${JSON.stringify(r.made)}`);
+  if (!r.start || !r.startClosed) bad.push('시작 카드');
+  if (!r.guide.open || !r.guide.keys || !r.guide.closed || !r.guide.byKey) bad.push(`사용법 창 ${JSON.stringify(r.guide)}`);
+  if (!(r.simplePanels >= 4 && r.simplePanels <= 6 && r.allPanels >= r.simplePanels + 8)) bad.push(`간단히/모두 ${r.simplePanels}/${r.allPanels}`);
+  if (!r.fix.up || !r.fix.text.includes('→') || !r.fix.back) bad.push(`고민별 다듬기 ${JSON.stringify(r.fix)}`);
+  const ln = r.liveNext;
+  if (ln.i !== 1 || ln.patch !== '로즈 피아노' || ln.tr !== 2 || ln.bpm !== 128 || ln.looperBpm !== '128' || ln.title !== '빠른 곡') bad.push(`세트리스트 다음 곡 ${JSON.stringify(ln)}`);
+  if (r.liveDigit.i !== 2 || r.liveDigit.tr !== -3 || r.liveProgram.i !== 0 || r.liveProgram.tr !== 0 || r.liveCount !== 4) bad.push(`세트리스트 ${JSON.stringify([r.liveDigit, r.liveProgram, r.liveCount])}`);
+  if (!r.folded.hidden || r.folded.voices < 1 || !r.folded.back) bad.push(`건반 접기 ${JSON.stringify(r.folded)}`);
+  if (r.reload.songs !== 4 || r.reload.mode !== 'all' || r.reload.start) bad.push(`다시 열기 ${JSON.stringify(r.reload)}`);
   if (r.refined < r.made.score) bad.push('더 비슷하게');
   if (r.midi.events.join() !== '45' || r.midi.chips[0] !== 'A2' || r.midi.state !== 'on' || r.midiMade.events !== 1 || r.midiMade.score < 60) bad.push(`MIDI 함께 ${JSON.stringify([r.midi, r.midiMade])}`);
   if (r.chordKind === 'tone' || !r.toned.eq) bad.push('톤만 입히기');
   if (r.regionSample.source !== 'sample' || r.stretched.seconds < 10 || r.stretched.loop !== 'forward' || r.padVoice < 1) bad.push('샘플·늘리기');
-  for (const k of ['synthOverflow', 'samplerOverflow', 'looperOverflow', 'tuningOverflow', 'matchOverflow']) if (r[k] > 0) bad.push(`${k}=${r[k]}`);
+  for (const k of ['synthOverflow', 'samplerOverflow', 'looperOverflow', 'tuningOverflow', 'matchOverflow', 'liveOverflow']) if (r[k] > 0) bad.push(`${k}=${r[k]}`);
   if (bad.length) {
     console.error(name, '실패:', bad.join(', '));
     process.exitCode = 1;

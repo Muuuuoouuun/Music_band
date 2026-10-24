@@ -13,8 +13,10 @@ import { MatchView } from './view-match.js';
 import { SamplerView } from './view-sampler.js';
 import { LooperView } from './view-looper.js';
 import { TuningView } from './view-tuning.js';
+import { LiveView } from './view-live.js';
+import { openGuide } from './guide.js';
 
-const TABS = ['synth', 'match', 'sampler', 'looper', 'tuning'];
+const TABS = ['synth', 'live', 'match', 'sampler', 'looper', 'tuning'];
 
 class App {
   constructor() {
@@ -39,6 +41,8 @@ class App {
     this.tab = 'synth';
     this.bypass = false;
     this.phrase = null;
+    const ui = store.load('ui', {});
+    this.ui = ui && typeof ui === 'object' ? ui : {};
   }
 
   /** 악기에 실제로 거는 음색 (이펙트 끄고 비교 중이면 이펙트 뺀 것) */
@@ -182,6 +186,13 @@ class App {
     this.emit('presets');
   }
 
+  // ---- 화면 설정 (보기 방식·건반 접기·처음 안내) ----
+  setUi(changes) {
+    this.ui = { ...this.ui, ...changes };
+    store.save('ui', this.ui);
+    this.emit('ui', this.ui);
+  }
+
   // ---- 튜닝·빠르기 ----
   setTuning(t) {
     this.tuning = normalizeTuning(t);
@@ -269,8 +280,15 @@ class App {
     this.tab = id;
     for (const b of document.querySelectorAll('.tab')) b.setAttribute('aria-current', String(b.dataset.tab === id));
     for (const v of document.querySelectorAll('.view')) v.hidden = v.dataset.view !== id;
+    // 좁은 화면에서 옆으로 밀리는 탭 줄: 고른 탭이 보이게 (세로로는 움직이지 않음)
+    const nav = document.querySelector('.tabs');
+    const cur = nav?.querySelector(`[data-tab="${id}"]`);
+    if (cur && nav.scrollWidth > nav.clientWidth) {
+      nav.scrollLeft += cur.getBoundingClientRect().left - nav.getBoundingClientRect().left - (nav.clientWidth - cur.offsetWidth) / 2;
+    }
     try { history.replaceState(null, '', `#${id}`); } catch { /* 액자 안에서는 무시 */ }
     this.emit(`show:${id}`);
+    this.emit('show', id);
   }
 
   renderHeader() {
@@ -295,11 +313,15 @@ app.match = MatchView(document.getElementById('view-match'), app);
 SamplerView(document.getElementById('view-sampler'), app);
 app.looper = LooperView(document.getElementById('view-looper'), app);
 TuningView(document.getElementById('view-tuning'), app);
+app.setlist = LiveView(document.getElementById('view-live'), app);
 app.keyboard = new Keyboard(document.getElementById('dock'), {
   noteOn: (m, v) => app.noteOn(m, v),
   noteOff: (m) => app.noteOff(m),
   sustain: (on) => app.sustain(on),
   describe: (m, v) => app.describe(m, v),
+  program: (n) => app.emit('program', n),
+  folded: store.load('ui', {})?.dockFolded === true,
+  onFold: (on) => app.setUi({ dockFolded: on }),
 });
 
 for (const b of document.querySelectorAll('.tab')) b.addEventListener('click', () => app.showTab(b.dataset.tab));
@@ -311,6 +333,15 @@ document.getElementById('power').addEventListener('click', async () => {
   } else await app.ensureAudio();
 });
 document.getElementById('panic').addEventListener('click', () => app.panic());
+document.getElementById('help').addEventListener('click', () => openGuide(app));
+window.addEventListener('keydown', (e) => {
+  const el = e.target;
+  const typing = el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName));
+  if (e.key === '?' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault();
+    openGuide(app);
+  }
+});
 document.getElementById('master').addEventListener('input', (e) => app.studio.setMaster(Number(e.target.value) / 100));
 let resizeTimer;
 window.addEventListener('resize', () => {
