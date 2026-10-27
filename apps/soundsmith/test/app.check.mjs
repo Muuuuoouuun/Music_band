@@ -213,9 +213,15 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
 
   // ---- 샘플러 (실험실의 '샘플' 상자) ----
   await page.locator('.lab-detail .seg-btn', { hasText: /^샘플$/ }).click();
-  await page.click('text=데모 소리');
+  await page.click('.sampler-tools button:has-text("데모 소리")');
   await page.waitForTimeout(300);
   r.sample = await page.evaluate(() => ({ root: window.soundsmith.sample.rootName, source: window.soundsmith.patch.source }));
+  // 샘플러 요약 줄·단계·표시 미세 이동
+  r.smpSteps = await page.locator('.smp-steps .smp-step').count();
+  const ls0 = await page.evaluate(() => window.soundsmith.sample.loopStart);
+  await page.locator('.nudge-btns button[aria-label="조금 뒤로"]').click();
+  const ls1 = await page.evaluate(() => window.soundsmith.sample.loopStart);
+  r.smpNudge = ls1 > ls0 && ls1 - ls0 < 2000;
   await page.keyboard.down('h');
   await page.waitForTimeout(120);
   r.sampleVoice = (await S(page)).voices;
@@ -241,6 +247,15 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
   r.looperOverflow = await overflow();
   await shot('looper');
   await page.click('.looper-slot >> text=■ 정지');
+  // 트랙 음색 고르기 · Space 로 재생·정지
+  await page.selectOption('.track >> nth=0 >> .track-sound', 'air-pad');
+  r.trackPick = await page.evaluate(() => window.soundsmith.looper.state.tracks[0].sound.label);
+  await page.locator('.looper-head').click();
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(250);
+  const sp1 = await page.evaluate(() => window.soundsmith.looper.info().playing);
+  await page.keyboard.press('Space');
+  r.spaceKey = sp1 === true && (await page.evaluate(() => window.soundsmith.looper.info().playing)) === false;
   // 반주 만들기: 마디 칸 고치기 → 후렴 스타일 → 이유 → 넣기(베이스는 트랙 3) → 미리 듣기 → ChordPro
   await page.click('.arr-open');
   const chords = ['C', 'G/B', 'Am7', 'Fadd9', 'F', 'C/E', 'Dm7', 'Gsus4 G'];
@@ -374,6 +389,10 @@ for (const viewport of [{ width: 1360, height: 900, name: 'desktop' }, { width: 
 
   // ---- 음 높이 자세히 (예전 튜닝 화면) ----
   await page.click('text=음 높이 자세히 ▸');
+  // 자주 쓰는 설정 → 요약 줄
+  await page.click('.chip-btn[data-setup="orchestra"]');
+  r.tunSetup = `${await page.evaluate(() => window.soundsmith.tuning.a4)}|${/A4 442/.test(await page.textContent('.tun-now-read'))}|${await page.locator('.tun-fold').first().evaluate((d) => d.open)}`;
+  await page.click('.chip-btn[data-setup="standard"]');
   await page.click('.chip-btn[data-hz="442"]');
   await page.click('.temp-card[data-id="werckmeister3"]');
   r.tuning = await page.evaluate(() => ({ a: window.soundsmith.studio.tuner.freq(69), t: window.soundsmith.tuning.temperament }));
@@ -455,6 +474,10 @@ for (const [name, r] of Object.entries(results)) {
   expect(r.trackSound, '루퍼로 보내기');
   expect(r.sample.root === 'A2' && r.sample.source === 'sample', '데모 샘플');
   expect(r.sampleVoice >= 1, '샘플 연주');
+  expect(r.smpSteps === 5 && r.smpNudge, `샘플러 단계·미세 이동 ${r.smpSteps}/${r.smpNudge}`);
+  expect(r.trackPick === '공기 패드', `트랙 음색 고르기 ${r.trackPick}`);
+  expect(r.spaceKey, 'Space 로 루퍼 재생·정지');
+  expect(r.tunSetup === '442|true|false', `자주 쓰는 튜닝 ${r.tunSetup}`);
   expect(r.recorded === '60,67' && r.afterUndo === 0, `루퍼 녹음 ${r.recorded}/${r.afterUndo}`);
   expect(r.toneMeasured, '톤 재기');
   expect(r.toneKnob, '톤 노브');

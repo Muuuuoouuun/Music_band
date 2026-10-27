@@ -789,6 +789,8 @@ export function PadsView(root, app) {
     play: playSeq,
     stop: stopSeq,
     hit: async (i) => { await ensureKit(); hit(i, 0.9); },
+    /** 실험실 샘플러의 지금 샘플을 잘라 쓰기 (실험실에서 '샘플 패드에서 자르기') */
+    fromLab: () => useSampleBtn.click(),
     setBars,
     undo,
     info: () => ({

@@ -40,7 +40,7 @@ export class Keyboard {
 
   build() {
     this.readout = h('output', { class: 'dock-readout', 'aria-live': 'off' }, '건반을 누르거나 A·S·D… 키를 치세요');
-    this.chordEl = h('output', { class: 'kbd-chord', 'aria-live': 'polite', 'aria-label': '지금 친 코드' }, '—');
+    this.chordEl = h('output', { class: 'kbd-chord', 'aria-live': 'polite', 'aria-label': '지금 친 코드', dataset: { state: 'idle' } }, '—');
     this.octLabel = h('span', { class: 'oct-label' });
     this.holdBtn = h('button', { type: 'button', class: 'pedal', 'aria-pressed': 'false', title: '서스테인 페달처럼 손을 떼도 소리가 이어짐 (MIDI 페달 CC64 도 같은 스위치)' },
       h('span', { class: 'led', 'aria-hidden': 'true' }), h('span', { class: 'long' }, '서스테인'), h('span', { class: 'short' }, '페달'));

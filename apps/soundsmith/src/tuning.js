@@ -36,6 +36,20 @@ export const A4_PRESETS = [
 
 export const DEFAULT_TUNING = { a4: 440, transpose: 0, fine: 0, temperament: 'equal', root: 0, stretch: 0, custom: null };
 
+/** 자주 쓰는 설정 (기준음·음률·미세 조정·늘이기를 한 번에). 조옮김·기준 조는 곡을 따르므로 건드리지 않는다. */
+export const TUNING_SETUPS = [
+  { id: 'standard', label: '기본', hint: 'A440 · 12평균율', set: { a4: 440, temperament: 'equal', fine: 0, stretch: 0 } },
+  { id: 'piano', label: '피아노 조율처럼', hint: 'A440 · 옥타브 늘이기 1 cent', set: { a4: 440, temperament: 'equal', fine: 0, stretch: 1 } },
+  { id: 'orchestra', label: '오케스트라와 함께', hint: 'A442 · 12평균율', set: { a4: 442, temperament: 'equal', fine: 0, stretch: 0 } },
+  { id: 'just', label: '맑은 화음 (순정률)', hint: 'A440 · 순정률 · 곡 조 기준', set: { a4: 440, temperament: 'just', fine: 0, stretch: 0 } },
+  { id: 'baroque', label: '바로크 음악', hint: 'A415 · 베르크마이스터 III', set: { a4: 415, temperament: 'werckmeister3', fine: 0, stretch: 0 } },
+];
+
+/** 지금 튜닝이 어느 자주 쓰는 설정과 같은지 (없으면 null) */
+export function setupOf(t) {
+  return TUNING_SETUPS.find((x) => Object.entries(x.set).every(([k, v]) => t[k] === v))?.id ?? null;
+}
+
 const clamp = (v, lo, hi, fallback) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback);
 
 export function normalizeTuning(t = {}) {

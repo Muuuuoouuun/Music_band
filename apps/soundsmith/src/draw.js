@@ -272,7 +272,7 @@ export function drawRoll(canvas, notes, beats, beatsPerBar, playhead, accent, re
   } else {
     g.fillStyle = color('faint');
     g.font = `12px ${color('font-body')}`;
-    g.fillText(recording ? '녹음 중 — 건반을 치세요' : '비어 있음', 8, h / 2 + 4);
+    g.fillText(recording ? '녹음 중 — 건반을 치세요' : '비어 있음 · ● 를 눌러 녹음하거나 반주 만들기로 채워요', 8, h / 2 + 4);
   }
   if (playhead != null) {
     const x = (playhead / beats) * w;

@@ -3,7 +3,7 @@ import { h, panel, nextId, knob } from './ui.js';
 import { drawRoll } from './draw.js';
 import { Instrument } from './engine.js';
 import { LooperState, METERS, QUANTIZE, loopClock, barBeat, eventsInWindow, exampleLoop } from './looper.js';
-import { factoryById } from './presets.js';
+import { factoryById, FACTORY } from './presets.js';
 import { TRANSITIONS } from './fxgen.js';
 import { ArrangerPanel } from './view-arranger.js';
 
@@ -56,9 +56,26 @@ export function LooperView(root, app) {
     h('div', { class: 'transport-pos' }, pos, posBar, posNote));
 
   // ---- 트랙 ----
+  // 트랙 음색 고르기: 맨 위는 지금 트랙 음색(표시만), 그 아래 '지금 음색으로'와 기본·내 음색
+  const soundOptions = () => [
+    h('option', { value: '__now' }, `↳ 지금 음색으로 · ${app.patch.name}`),
+    app.userPresets.length ? h('optgroup', { label: '내 음색' }, ...app.userPresets.map((u) => h('option', { value: u.id }, u.patch.name))) : null,
+    h('optgroup', { label: '기본 음색' }, ...FACTORY.map((f) => h('option', { value: f.id }, f.patch.name))),
+  ];
   const rows = L.tracks.map((track, i) => {
-    const arm = h('button', { type: 'button', class: 'arm', 'aria-pressed': 'false', 'aria-label': `${track.name}에 녹음` }, '●');
-    const sound = h('span', { class: 'track-sound' });
+    const arm = h('button', { type: 'button', class: 'arm', 'aria-pressed': 'false', 'aria-label': `${track.name}에 녹음`, title: '이 트랙에 녹음' }, '●');
+    const sound = h('select', { class: 'track-sound', 'aria-label': `${track.name} 음색` });
+    sound.addEventListener('change', () => {
+      const v = sound.value;
+      if (v === '__now') setSound(track);
+      else if (v) {
+        const entry = app.findPreset(v);
+        if (entry) { track.sound = { patch: entry.patch, sample: null, label: entry.patch.name }; applySound(track); }
+      }
+      track.example = false;
+      render();
+      app.notice(`${track.name} 음색을 '${track.sound.label}'(으)로 바꿨어요.`);
+    });
     const mute = h('button', { type: 'button', class: 'mini', 'aria-pressed': 'false', 'aria-label': `${track.name} 소리 끄기` }, 'M');
     const solo = h('button', { type: 'button', class: 'mini', 'aria-pressed': 'false', 'aria-label': `${track.name}만 듣기` }, 'S');
     const vol = knob({
@@ -67,9 +84,8 @@ export function LooperView(root, app) {
       defaultValue: () => 0.8,
     });
     const roll = h('canvas', { class: 'roll', 'aria-label': `${track.name} 음표` });
-    const undo = h('button', { type: 'button', class: 'quiet small' }, '실행 취소');
+    const undo = h('button', { type: 'button', class: 'quiet small', title: '마지막으로 겹쳐 녹음한 한 바퀴만 지워요' }, '실행 취소');
     const clear = h('button', { type: 'button', class: 'quiet small' }, '지우기');
-    const take = h('button', { type: 'button', class: 'quiet small', title: '지금 고른 음색(실험실·예배 무대)으로 바꿈' }, '지금 음색으로');
     arm.addEventListener('click', () => {
       if (rec.active && rec.track !== i) stopRecording();
       rec.track = i;
@@ -79,14 +95,13 @@ export function LooperView(root, app) {
     solo.addEventListener('click', () => { track.solo = !track.solo; render(); });
     undo.addEventListener('click', () => { if (L.undo(i)) { track.inst?.allOff(undefined, true); render(); } });
     clear.addEventListener('click', () => { L.clear(i); track.example = false; track.inst?.allOff(undefined, true); render(); });
-    take.addEventListener('click', () => { setSound(track); render(); app.notice(`${track.name} 음색을 지금 음색 '${track.sound.label}'에 맞췄어요.`); });
     const el = h('div', { class: `track track-${track.color}` },
       h('div', { class: 'track-head' },
         arm,
         h('div', { class: 'track-title' }, h('strong', {}, track.name), sound),
         h('div', { class: 'track-btns' }, mute, solo)),
       roll,
-      h('div', { class: 'track-foot' }, vol.el, take, undo, clear));
+      h('div', { class: 'track-foot' }, vol.el, h('div', { class: 'track-edit' }, undo, clear)));
     return { el, arm, sound, mute, solo, roll, undo, clear, track };
   });
 
@@ -141,7 +156,7 @@ export function LooperView(root, app) {
   root.append(
     panel('루퍼', {
       cls: 'span-wide looper-panel',
-      hint: '녹음할 트랙(●)을 고르고 녹음을 누르면 한 마디를 세고 시작해요. 녹음을 켜 둔 채로 돌면 한 바퀴마다 겹쳐 쌓이고, 실행 취소는 마지막 바퀴만 지웁니다.',
+      hint: '● 로 녹음할 트랙을 고르고 녹음 — 한 마디 세고 시작, 켜 둔 채 돌면 겹쳐 쌓여요. Space 재생 · R 녹음.',
       actions: arrBtn,
     }, transport, h('div', { class: 'tracks' }, ...rows.map((r) => r.el)), arranger.el));
 
@@ -319,7 +334,12 @@ export function LooperView(root, app) {
       r.arm.setAttribute('aria-pressed', String(L.tracks.indexOf(tr) === rec.track));
       r.mute.setAttribute('aria-pressed', String(tr.muted));
       r.solo.setAttribute('aria-pressed', String(tr.solo));
-      r.sound.textContent = tr.sound ? `${tr.sound.label}${tr.example ? ' · 예시' : ''}` : '음색: 녹음할 때의 지금 음색';
+      const label = tr.sound ? `${tr.sound.label}${tr.example ? ' · 예시' : ''}` : `음색 없음 · 녹음하면 지금 음색 (${app.patch.name})`;
+      if (r.sound.dataset.key !== `${label}|${app.patch.name}|${app.userPresets.length}`) {
+        r.sound.dataset.key = `${label}|${app.patch.name}|${app.userPresets.length}`;
+        r.sound.replaceChildren(h('option', { value: '', hidden: true }, label), ...soundOptions().filter(Boolean));
+      }
+      r.sound.value = '';
       r.undo.disabled = !tr.notes.length;
       r.clear.disabled = !tr.notes.length;
       r.el.classList.toggle('is-recording', rec.active && L.tracks.indexOf(tr) === rec.track);
@@ -338,7 +358,23 @@ export function LooperView(root, app) {
   }
 
   app.onFrame(() => { if (t.playing && !root.hidden) frame(); });
+  // 예배 무대에서: Space = 재생·정지, R = 녹음 (글을 쓰거나 단추·노브에 손이 있을 때는 그쪽 몫)
+  window.addEventListener('keydown', (e) => {
+    if (app.tab !== 'stage' || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target?.closest?.('input, textarea, select, button, [role=slider], [contenteditable], dialog')) return;
+    if (e.key === ' ') {
+      e.preventDefault();
+      if (t.playing) stop();
+      else play();
+    } else if (e.key === 'r' || e.key === 'R') {
+      e.preventDefault();
+      if (rec.active) stopRecording();
+      else startRecording();
+    }
+  });
   app.on('show:looper', () => requestAnimationFrame(render));
+  app.on('presets', render);
+  app.on('patch', ({ phase } = {}) => { if (phase === 'change' && !root.hidden) render(); });
   app.on('resize', frame);
   app.on('audio', ensureInstruments);
   app.on('panic', stop);

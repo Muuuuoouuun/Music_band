@@ -1,8 +1,9 @@
 // 음 높이 자세히 (톤 맞추기 화면에서 펼침): 기준음(A4), 조옮김·미세 조정, 음률과 기준 조, 음마다 cent,
 // 옥타브 늘이기, 평균율과 번갈아 듣기, 마이크 튜너, Scala 주고받기.
+// 맨 위 요약 줄: 지금 튜닝 한 줄, 자주 쓰는 설정(한 번에 맞춤), 상자로 가는 바로가기. 주파수 표·Scala 는 접어 둔다.
 import { h, panel, nextId, chipButton, knob } from './ui.js';
 import { drawTuningBars, drawNeedle } from './draw.js';
-import { A4_PRESETS, NOTE_NAMES, TEMPERAMENTS, makeTuner, noteName, offsets, parseScala, degreesToCustom, exportScala } from './tuning.js';
+import { A4_PRESETS, NOTE_NAMES, TEMPERAMENTS, TUNING_SETUPS, setupOf, makeTuner, noteName, offsets, parseScala, degreesToCustom, exportScala } from './tuning.js';
 import { detectPitch } from './sample.js';
 import { Instrument } from './engine.js';
 import { factoryById } from './presets.js';
@@ -122,6 +123,8 @@ export function TuningView(root, app) {
       tuner.buf = new Float32Array(4096);
       src.connect(tuner.analyser);
       tunerBtn.textContent = '튜너 끄기';
+      needle.hidden = false;
+      drawNeedle(needle, null);
     } catch {
       tuner.stream = null;
       app.notice('마이크를 열지 못했어요. 브라우저의 마이크 권한을 확인하세요.', 'bad');
@@ -134,7 +137,7 @@ export function TuningView(root, app) {
     tuner.cents = null;
     tunerBtn.textContent = '마이크 튜너 켜기';
     tunerNote.textContent = '—';
-    drawNeedle(needle, null);
+    needle.hidden = true;
   }
   app.onFrame((time) => {
     if (!tuner.analyser || time - tuner.last < 80) return;
@@ -175,7 +178,22 @@ export function TuningView(root, app) {
     }
   });
 
-  root.append(h('div', { class: 'tuning-layout' },
+  // ---- 요약 줄 ----
+  const nowRead = h('span', { class: 'tun-now-read', 'aria-live': 'polite' });
+  const setupChips = TUNING_SETUPS.map((x) => chipButton(x.label, () => {
+    set(x.set);
+    app.notice(`'${x.label}' 설정으로 맞췄어요 (${x.hint}). 조옮김은 그대로예요.`);
+  }, { title: x.hint, dataset: { setup: x.id } }));
+  const panels = [];
+  const jump = (i) => panels[i]?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  const summary = h('div', { class: 'tun-bar' },
+    h('div', { class: 'tun-now' }, h('span', { class: 'label' }, '지금 튜닝'), nowRead),
+    h('div', { class: 'tun-setups' }, h('span', { class: 'label' }, '자주 쓰는 설정'), h('div', { class: 'chip-row' }, ...setupChips)),
+    h('nav', { class: 'tun-nav', 'aria-label': '음 높이 상자로 가기' },
+      ...['기준음', '음률', '음마다 cent', '마이크 튜너', 'Scala 파일'].map((label, i) => h('button', { type: 'button', class: 'quiet small tun-jump', onclick: () => jump(i) }, `${label} ›`))));
+  needle.hidden = true;
+
+  root.append(summary, h('div', { class: 'tuning-layout' },
     panel('기준음', { hint: '모든 소리(신스·줄·샘플·루퍼)가 이 값을 따라요.' },
       h('div', { class: 'a4' }, a4.el, a4Out),
       h('div', { class: 'chip-row' }, ...a4Chips),
@@ -191,9 +209,10 @@ export function TuningView(root, app) {
       h('div', { class: 'btn-row' }, abBtn), abState),
     panel('음마다 cent', { cls: 'span-2', hint: '평균율에서 몇 cent 벗어나는지. 막대를 끌거나 숫자를 바꾸면 \'직접 조정\'이 돼요.' },
       chart, h('div', { class: 'cent-row' }, ...cells),
-      h('div', { class: 'table-wrap' }, table)),
+      h('details', { class: 'tun-fold' }, h('summary', {}, '건반별 주파수 표 (C4–B4)'), h('div', { class: 'table-wrap' }, table))),
     panel('마이크 튜너', {}, needle, h('div', { class: 'tuner-read' }, tunerNote, tunerDetail), h('div', { class: 'btn-row' }, tunerBtn)),
     panel('Scala 파일', { hint: '마이크로톤 음계 표준(.scl). 12음 + 옥타브 음계를 건반에 맞춰요.' },
+      h('details', { class: 'tun-fold' }, h('summary', {}, '음계 파일 열기 · 붙여넣기 · 내보내기'),
       sclText,
       h('div', { class: 'btn-row' },
         h('button', { type: 'button', onclick: () => applyScala(sclText.value) }, '붙여넣은 음계 적용'),
@@ -205,7 +224,8 @@ export function TuningView(root, app) {
             const r = await saveFile('soundsmith.scl', text, 'text/plain');
             if (r !== 'saved') app.notice((await copyText(text)) ? '이 화면에서는 .scl 저장이 안 돼서 내용을 클립보드에 복사했어요.' : '아래 칸의 내용을 복사해 .scl 파일로 저장하세요.');
           },
-        }, '지금 튜닝 내보내기')))));
+        }, '지금 튜닝 내보내기'))))));
+  panels.push(...root.querySelector('.tuning-layout').children);
 
   function drawChart() {
     if (chart.closest('[hidden]')) return;
@@ -216,6 +236,19 @@ export function TuningView(root, app) {
 
   function sync() {
     const t = app.tuning;
+    const off0 = offsets(t);
+    const dev = Math.max(...off0.map((c) => Math.abs(c)));
+    const sign0 = (v) => (v > 0 ? `+${v}` : v < 0 ? `−${-v}` : '±0');
+    nowRead.textContent = [
+      `A4 ${t.a4.toFixed(1)} Hz`,
+      `${TEMPERAMENTS[t.temperament].label}${t.temperament !== 'equal' ? ` (${NOTE_NAMES[t.root]} 기준)` : ''}`,
+      `조옮김 ${sign0(t.transpose)}`,
+      t.fine ? `미세 ${sign0(t.fine)} cent` : null,
+      t.stretch ? `늘이기 ${t.stretch.toFixed(1)}` : null,
+      dev < 0.05 ? '평균율과 같음' : `평균율과 최대 ${dev.toFixed(1)} cent 차이`,
+    ].filter(Boolean).join(' · ');
+    const cur = setupOf(t);
+    setupChips.forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.setup === cur)));
     a4.set(t.a4);
     a4Out.textContent = `${t.a4.toFixed(1)} Hz`;
     a4Chips.forEach((c) => c.setAttribute('aria-pressed', String(Number(c.dataset.hz) === t.a4)));

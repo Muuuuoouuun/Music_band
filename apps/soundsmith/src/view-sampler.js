@@ -1,5 +1,7 @@
 // 샘플러 화면: 소리 가져오기(파일·마이크·데모·지금 음색 굽기), 시작/끝·루프 지점 끌기, 이음새 보기,
 // 기준 음·미세 조정(튜닝), 루프 방식, 크로스페이드, SFZ 악기 내보내기.
+// 위에는 지금 샘플 요약(들어 보기·건반 연주·샘플 패드로)과 단계 줄(가져오기 → 루프 → 이음새 → 기준 음 → 연주)이 있어
+// 누르면 그 상자로 간다. 루프 표시는 끌거나, 옮길 표시를 골라 ◀ ▶ (0 지점 하나씩)로 옮긴다.
 import { h, panel, nextId, knob } from './ui.js';
 import { drawSample, drawSeam } from './draw.js';
 import { peaks, trimSilence, detectPitch, findLoop, upwardZeroCrossings, encodeWav, sfzText, demoSample, toMono } from './sample.js';
@@ -50,7 +52,8 @@ export function SamplerView(root, app) {
 
   const empty = h('div', { class: 'empty-state' },
     h('strong', {}, '샘플이 아직 없어요'),
-    h('p', {}, '오디오 파일을 불러오거나, 데모 소리·지금 음색 굽기로 시작하세요. 불러오면 무음 자르기, 음높이 찾기, 루프 지점 찾기를 자동으로 합니다.'));
+    h('p', {}, '오디오 파일을 불러오거나, 데모 소리·지금 음색 굽기로 시작하세요. 불러오면 무음 자르기, 음높이 찾기, 루프 지점 찾기를 자동으로 합니다.'),
+    h('div', { class: 'btn-row' }, h('button', { type: 'button', class: 'primary', onclick: () => demoBtn.click() }, '데모 소리로 시작하기')));
 
   const wave = h('canvas', { class: 'wave-canvas', 'aria-label': '샘플 파형. 시작·끝·루프 표시를 끌어 옮길 수 있어요' });
   const zoomBtn = h('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false' }, '루프 부분 확대');
@@ -75,18 +78,41 @@ export function SamplerView(root, app) {
   const useBtn = h('button', { type: 'button', class: 'primary' }, '이 샘플로 건반 연주');
   const exportBtn = h('button', { type: 'button' }, 'SFZ 악기 내보내기 (.zip)');
 
+  // ---- 요약 줄 ----
+  const sumName = h('strong', { class: 'smp-name' });
+  const sumMeta = h('span', { class: 'smp-meta' });
+  const listenBtn = h('button', { type: 'button', class: 'smp-listen' }, '▶ 들어 보기');
+  const padsBtn = h('button', { type: 'button', class: 'quiet small', title: '이 샘플을 샘플 패드 화면에서 조각내 비트로 써요' }, '샘플 패드에서 자르기 ›');
+  const stepList = h('ol', { class: 'smp-steps', 'aria-label': '샘플 만드는 단계 (누르면 그 상자로)' });
+  const summary = h('div', { class: 'smp-bar' },
+    h('div', { class: 'smp-now' }, h('span', { class: 'label' }, '지금 샘플'), sumName, sumMeta),
+    h('div', { class: 'btn-row smp-acts' }, listenBtn, useBtn, padsBtn),
+    stepList);
+
+  // ---- 표시 미세 이동: 옮길 표시를 고르고 ◀ ▶ ----
+  const MARKS = [['start', '시작'], ['loopStart', '루프 시작'], ['loopEnd', '루프 끝'], ['end', '끝']];
+  let nudgeKey = 'loopStart';
+  const nudgeSeg = h('div', { class: 'seg', role: 'group', 'aria-label': '옮길 표시' });
+  const nudgeRead = h('output', { class: 'nudge-read' });
+  const nudgeBtn = (label, dir, big, title) => h('button', { type: 'button', class: 'icon-btn small', title, 'aria-label': title, onclick: () => nudge(dir, big) }, label);
+  const nudgeRow = h('div', { class: 'nudge-row' },
+    h('span', { class: 'label' }, '옮길 표시'), nudgeSeg,
+    h('div', { class: 'joined nudge-btns' }, nudgeBtn('◀◀', -1, true, '크게 앞으로'), nudgeBtn('◀', -1, false, '조금 앞으로'), nudgeBtn('▶', 1, false, '조금 뒤로'), nudgeBtn('▶▶', 1, true, '크게 뒤로')),
+    nudgeRead);
+
+  const wavePanel = panel('파형과 루프', {
+    cls: 'span-wide',
+    hint: '흰 표시 = 시작·끝, 금색 = 루프. 끌거나, 옮길 표시를 고르고 ◀ ▶ (0 지점 하나씩).',
+    actions: h('div', { class: 'panel-actions' }, zoomBtn, snapBtn),
+  }, wave, nudgeRow);
   const body = h('div', { class: 'sampler-body' },
-    panel('파형과 루프', {
-      cls: 'span-wide',
-      hint: '흰 표시는 소리의 시작·끝, 금색 표시는 루프 구간. 끌어서 옮기세요.',
-      actions: h('div', { class: 'panel-actions' }, zoomBtn, snapBtn),
-    }, wave),
-    panel('이음새', { hint: '루프 끝에서 루프 시작으로 넘어가는 순간. 두 선이 매끄럽게 이어져야 "틱" 소리가 없어요.' },
+    wavePanel,
+    panel('이음새', { hint: '루프 끝 → 시작으로 넘어가는 곳. 두 선이 매끄럽게 이어져야 "틱" 소리가 없어요.' },
       seam, h('p', { class: 'seam-line' }, seamScore),
       h('div', { class: 'btn-row' },
         h('button', { type: 'button', onclick: () => update((s) => autoLoop(s)) }, '루프 자동 찾기'),
         h('button', { type: 'button', onclick: () => update((s) => Object.assign(s, trimSilence(s.data, s.sr))) }, '무음 자르기'))),
-    panel('튜닝', { hint: '샘플이 실제로 어떤 음인지. 감지한 값을 넣어 두면 건반을 누른 음 그대로 납니다.' },
+    panel('기준 음', { hint: '샘플의 실제 음. 맞춰 두면 누른 건반 음 그대로 나요.' },
       info,
       h('div', { class: 'ctl' }, h('label', { for: rootSel.id }, '기준 음'), h('span'), rootSel),
       h('div', { class: 'knobs' }, fine.el),
@@ -100,15 +126,57 @@ export function SamplerView(root, app) {
       h('div', { class: 'ctl ctl-seg' }, h('span', { class: 'label' }, '루프'), h('div', { class: 'seg', role: 'group', 'aria-label': '루프 방식' }, ...modeBtns)),
       modeHint,
       h('div', { class: 'knobs' }, xfade.el),
-      h('div', { class: 'btn-row' }, useBtn, exportBtn)));
+      h('div', { class: 'btn-row' }, exportBtn)));
 
+  const [, seamPanel, tunePanel, playPanel] = body.children;
   root.append(
     h('div', { class: 'sampler-tools' },
       h('label', { class: 'file-btn primary', for: fileInput.id }, '오디오 파일 불러오기', fileInput),
       recBtn, demoBtn,
       h('span', { class: 'bar-sep', 'aria-hidden': 'true' }),
       h('div', { class: 'joined' }, bakeNote, bakeBtn)),
-    empty, body);
+    empty, summary, body);
+
+  listenBtn.addEventListener('click', async () => {
+    const s = app.sample;
+    if (!s) return;
+    if (app.patch.source !== 'sample') app.setParam('source', 'sample', 'change');
+    await app.audition([s.root], 1.6);
+  });
+  padsBtn.addEventListener('click', () => {
+    if (!app.sample) return;
+    app.pads.fromLab();
+    app.showTab('pads');
+  });
+  function nudge(dir, big) {
+    const s = app.sample;
+    if (!s) return;
+    const key = nudgeKey;
+    const snap = snapBtn.getAttribute('aria-pressed') === 'true' && key.startsWith('loop');
+    update((x) => {
+      let at = x[key];
+      if (snap) {
+        // 0 지점(위로 지나는 곳) 하나씩 — 크게는 열 개
+        for (let k = 0; k < (big ? 10 : 1); k++) {
+          const win = Math.round(x.sr * 0.05);
+          const z = dir > 0 ? upwardZeroCrossings(x.data, at + 1, Math.min(x.data.length, at + win)) : upwardZeroCrossings(x.data, Math.max(1, at - win), at);
+          if (!z.length) break;
+          at = dir > 0 ? z[0] : z.at(-1);
+        }
+      } else at += dir * Math.round(x.sr / 1000) * (big ? 10 : 1);
+      x[key] = Math.max(0, Math.min(x.data.length, at));
+      if (x.start > x.end - 100) x.start = Math.max(0, x.end - 100);
+      x.cost = null;
+    });
+    draw(key);
+  }
+  wave.tabIndex = 0;
+  wave.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    nudge(e.key === 'ArrowRight' ? 1 : -1, e.shiftKey);
+  });
+  const goTo = (el) => el.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
 
   // ---- 소리 가져오기 ----
   const accept = (s, { use = true } = {}) => {
@@ -263,15 +331,15 @@ export function SamplerView(root, app) {
     const s = app.sample;
     empty.hidden = Boolean(s);
     body.hidden = !s;
+    summary.hidden = !s;
     exportBtn.disabled = !s;
     if (!s) return;
     const sec = (n) => `${(n / s.sr).toFixed(2)} s`;
     const d = s.detected;
+    // 이름·길이·루프는 위 요약 줄에 있으니 여기는 음높이 자세한 값만
     info.replaceChildren(
-      h('dt', {}, '이름'), h('dd', {}, s.name),
-      h('dt', {}, '길이'), h('dd', {}, `${sec(s.end - s.start)} (전체 ${sec(s.data.length)}) · ${s.sr} Hz`),
       h('dt', {}, '감지한 음'), h('dd', {}, d ? `${noteName(d.note)} · ${d.hz.toFixed(1)} Hz · ${d.cents >= 0 ? '+' : ''}${d.cents.toFixed(0)} cent · 확신 ${Math.round(d.clarity * 100)}%` : '음높이를 찾지 못함 (타악기·잡음)'),
-      h('dt', {}, '루프'), h('dd', {}, s.loopMode === 'off' ? '없음' : `${sec(s.loopStart - s.start)} → ${sec(s.loopEnd - s.start)} (${sec(s.loopEnd - s.loopStart)})`));
+      h('dt', {}, '파일'), h('dd', {}, `전체 ${sec(s.data.length)} · ${s.sr} Hz`));
     rootSel.value = String(s.root);
     fine.set(s.fine);
     xfade.set(s.xfadeMs);
@@ -280,10 +348,37 @@ export function SamplerView(root, app) {
     const cost = app.bakedSample?.seamCost;
     seamScore.textContent = s.loopMode === 'off' ? '루프 없음' : cost == null ? '' : `이음새 매끄러움 ${Math.round(Math.max(0, 1 - cost) * 100)}%`;
     seamScore.dataset.level = cost == null ? '' : cost < 0.05 ? 'good' : cost < 0.25 ? 'warn' : 'bad';
-    draw();
+    // 요약 줄과 단계
+    const playing = app.patch.source === 'sample';
+    sumName.textContent = s.name;
+    sumMeta.textContent = `기준 음 ${noteName(s.root)}${s.fine ? ` ${s.fine > 0 ? '+' : '−'}${Math.abs(s.fine)}c` : ''} · ${((s.end - s.start) / s.sr).toFixed(2)}초 · ${LOOP_MODES.find((m) => m.id === s.loopMode).label}`;
+    useBtn.textContent = playing ? '✓ 건반이 이 샘플을 연주 중' : '이 샘플로 건반 연주';
+    useBtn.setAttribute('aria-pressed', String(playing));
+    const seamText = s.loopMode === 'off' ? '루프 없음' : cost == null ? '재는 중' : `매끄러움 ${Math.round(Math.max(0, 1 - cost) * 100)}%`;
+    const STEPS = [
+      ['가져오기', s.name, 'good', summary],
+      ['시작·끝·루프', s.loopMode === 'off' ? '루프 없음' : `${((s.loopEnd - s.loopStart) / s.sr).toFixed(2)}초 루프`, 'good', wavePanel],
+      ['이음새', seamText, s.loopMode === 'off' ? '' : seamScore.dataset.level, seamPanel],
+      ['기준 음', s.detected ? `${noteName(s.root)} · 확신 ${Math.round(s.detected.clarity * 100)}%` : `${noteName(s.root)} (직접)`, s.detected ? 'good' : 'warn', tunePanel],
+      ['연주·내보내기', playing ? '건반 연주 중' : '준비', playing ? 'good' : '', playPanel],
+    ];
+    stepList.replaceChildren(...STEPS.map(([title, state, level, el], i) => h('li', {},
+      h('button', { type: 'button', class: 'smp-step', dataset: { level }, onclick: () => goTo(el) },
+        h('span', { class: 'smp-step-no', 'aria-hidden': 'true' }, String(i + 1)), h('strong', {}, title), h('span', { class: 'smp-step-state' }, state)))));
+    // 미세 이동 고르기
+    const marks = MARKS.filter(([k]) => s.loopMode !== 'off' || !k.startsWith('loop'));
+    if (!marks.some(([k]) => k === nudgeKey)) nudgeKey = marks[0][0];
+    nudgeSeg.replaceChildren(...marks.map(([k, label]) => {
+      const b = h('button', { type: 'button', class: 'seg-btn', 'aria-pressed': String(k === nudgeKey) }, label);
+      b.addEventListener('click', () => { nudgeKey = k; sync(); wave.focus({ preventScroll: true }); });
+      return b;
+    }));
+    nudgeRead.textContent = `${MARKS.find(([k]) => k === nudgeKey)[1]} ${(s[nudgeKey] / s.sr).toFixed(3)}초`;
+    draw(nudgeKey);
   }
 
   app.on('sample', sync);
+  app.on('patch', ({ phase } = {}) => { if (phase === 'change' && app.sample && !root.closest('[hidden]')) sync(); });
   app.on('resize', () => draw());
   app.on('show:sampler', () => requestAnimationFrame(sync));
   sync();

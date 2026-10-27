@@ -79,3 +79,14 @@ test('음이름과 가장 가까운 음', () => {
   assert.equal(n.name, 'A4');
   near(n.cents, 1200 * Math.log2(446 / 440), 1e-9);
 });
+
+test('자주 쓰는 튜닝 설정: 고르면 그 설정으로 알아보고, 조옮김·기준 조는 그대로', async () => {
+  const { TUNING_SETUPS, setupOf, normalizeTuning } = await import('../src/tuning.js');
+  for (const x of TUNING_SETUPS) {
+    const t = normalizeTuning({ transpose: 2, root: 7, ...x.set });
+    assert.equal(setupOf(t), x.id);
+    assert.equal(t.transpose, 2);
+    assert.equal(t.root, 7);
+  }
+  assert.equal(setupOf(normalizeTuning({ a4: 441 })), null);
+});
